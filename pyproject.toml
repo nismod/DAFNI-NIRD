@@ -18,6 +18,7 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["black", "ruff", "mypy", "pre-commit", "pytest", "pytest-cov"]
+docs = ["sphinx", "m2r2"]
 
 [project.urls]
 "Homepage" = "https://github.com/nismod/DAFNI-NIRD"

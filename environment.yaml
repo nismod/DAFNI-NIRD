@@ -5,11 +5,13 @@ channels:
 dependencies:
   - python=3.12
   - black
+  - m2r2
+  - mypy
   - pre-commit
   - pytest
   - pytest-cov
+  - ruff
+  - sphinx
   - pip
   - pip:
-      - ruff
-      - mypy
       - --editable .
