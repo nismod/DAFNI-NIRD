@@ -1,0 +1,30 @@
+[project]
+name = "nird"
+version = "0.1.1"
+authors = [
+    { name = "Tom Russell", email = "tom.russell@ouce.ox.ac.uk" },
+    { name = "Raghav Pant", email = "raghav.pant@ouce.ox.ac.uk" },
+    { name = "Yue Li", email = "yue.li@ouce.ox.ac.uk" },
+]
+description = "National Infrastructure Resilience Demonstrator"
+readme = "README.md"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["black", "ruff", "mypy", "pre-commit", "pytest", "pytest-cov"]
+
+[project.urls]
+"Homepage" = "https://github.com/nismod/DAFNI-NIRD"
+"Bug Tracker" = "https://github.com/nismod/DAFNI-NIRD/issues"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+src = ["src"]
