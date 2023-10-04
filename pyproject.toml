@@ -31,4 +31,4 @@ testpaths = ["tests"]
 src = ["src"]
 
 [tool.mypy]
-exclude = ['venv', '.venv', 'build']
+exclude = ['venv', '.venv', 'build', 'docs']
