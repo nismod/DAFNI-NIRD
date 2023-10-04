@@ -28,3 +28,6 @@ testpaths = ["tests"]
 
 [tool.ruff]
 src = ["src"]
+
+[tool.mypy]
+exclude = ['venv', '.venv', 'build']
