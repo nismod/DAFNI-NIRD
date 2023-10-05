@@ -8,6 +8,8 @@ Clone this repository:
 
     git clone git@github.com:nismod/DAFNI-NIRD.git
 
+(Or, if you prefer to use HTTPS authentication, `git clone https://github.com/nismod/DAFNI-NIRD.git`)
+
 Move into the cloned folder:
 
     cd DAFNI-NIRD
