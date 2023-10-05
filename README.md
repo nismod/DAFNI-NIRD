@@ -21,6 +21,9 @@ file](https://conda.io/projects/conda/en/latest/user-guide/tasks/manage-environm
 
     micromamba env create -f environment.yaml
 
+(In case micromamba fails to install pip packages, you can install them manually
+by running `micromamba activate nerd` then `pip install --editable .[dev]`)
+
 Activate it:
 
     micromamba activate nird
