@@ -61,3 +61,31 @@ To install new packages, add them to `environment.yaml` then run:
 To add new pre-commit hooks, configure them in `.pre-commit-config.yaml` then run:
 
     pre-commit run --all-files
+
+### Building documentation
+
+The documentation site is developed in the `./docs` directory using [Sphinx](https://www.sphinx-doc.org/en/master/usage/index.html).
+
+To build the docs:
+
+```bash
+cd docs
+# generate the API docs (this pulls information from the code and docstrings)
+sphinx-apidoc -M -o source/api ../src/nird/ --force
+# build the documentation site
+make html
+```
+
+To preview the site:
+
+```
+cd build/html
+python -m http.server
+```
+
+Then open a browser at the address shown (e.g. `http://0.0.0.0:8000`).
+
+## Acknowledgments
+
+This project was developed as part of a UKRI-funded research grant, reference ST/Y003780/1,
+supported by STFC and DAFNI, within the "Building a Secure and Resilient World" theme.

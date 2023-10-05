@@ -18,6 +18,7 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["black", "ruff", "mypy", "pre-commit", "pytest", "pytest-cov"]
+docs = ["sphinx", "m2r2"]
 
 [project.urls]
 "Homepage" = "https://github.com/nismod/DAFNI-NIRD"
@@ -30,4 +31,4 @@ testpaths = ["tests"]
 src = ["src"]
 
 [tool.mypy]
-exclude = ['venv', '.venv', 'build']
+exclude = ['venv', '.venv', 'build', 'docs']
