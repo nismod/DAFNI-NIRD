@@ -1,0 +1,32 @@
+name: mobility_test
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.10
+  - black
+  - make
+  - m2r2
+  - mypy
+  - pre-commit
+  - pytest
+  - pytest-cov
+  - ruff
+  - sphinx
+  - pip
+  - pandas
+  - python-igraph=0.9.*
+  - powerlaw
+  - tqdm
+  - requests
+  - scikit-learn
+  - folium
+  - geojson
+  - h3
+  - pooch
+  - statsmodels
+  - geopandas
+  - jupyter
+  - ipykernel
+  # pip install snkit
+  # pip install sckit-mobility by: git clone git@github.com:YueeeeeLi/scikit-mobility.git
