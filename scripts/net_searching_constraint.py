@@ -8,7 +8,6 @@ from collections import defaultdict
 import geopandas as gpd
 import networkx as nx
 import numpy as np
-import pandas as pd
 import snkit
 from skmob.models.radiation import Radiation
 
@@ -68,9 +67,9 @@ for i in range(oa_attr.shape[0]):
     oa_dict[str(oa_id)].append([pi, ei, ti, xi, yi])
 
 # inner: use the intersection index; retain the left geometry (which is oa in this case)
-oa_nd_sj = oa_attr.sjoin(
-    oprd_node, how="inner", predicate="intersects"
-)  # geometry: polygon
+oa_nd_sj = oa_attr.sjoin(oprd_node, how="inner", predicate="intersects")
+
+# geometry: polygon
 oa_nd_sj.reset_index(drop=True, inplace=True)
 oa_nd_sj["dist"] = np.nan
 for i in range(oa_nd_sj.shape[0]):
@@ -186,7 +185,6 @@ oprd_node.reset_index(drop=True, inplace=True)  # 19,716 none zero nodes
 
 # %%
 # (1) Add a searching constraint
-#
 test_flow = radiationFun.generate(
     oprd_node,
     name_to_index,
@@ -203,53 +201,3 @@ test_flow = radiationFun.generate(
 
 # test_flow.to_csv(
 # r"outputs\test_flow_1000.csv", index = False)
-
-# %%
-# (2) Add a capacity constraint to flow calculation
-"""
-To include capacity constraint, we need to iteratively assign the outflow into the
-network to calculate the flow; once a road segment exceeds its capacity, it will be
-excluded from analysis in the next round of simulation;
-
-1. How to determine the order for assigning origins to the network?
-Random Seeds
-2. How many initial flows should be assigned to the network iteratively?
-One-by-one until the first q roads get congested
-3. Stoping criteria?
-Until all the travellers have been assigned to the network
-"""
-# attach the capacity info (traffic counts) to open road networks
-mjrd_attr = pd.read_csv(
-    base_path
-    / "inputs"
-    / "incoming_data"
-    / "road"
-    / "dft_traffic_counts_aadf"
-    / "dft_traffic_counts_aadf.csv"
-)
-tc_dict = defaultdict(list)
-for i in range(mjrd_attr.shape[0]):
-    rn = mjrd_attr.loc[i, "Road_name"]
-    c13 = mjrd_attr.iloc[i, -13]
-    c12 = mjrd_attr.iloc[i, -12]
-    c11 = mjrd_attr.iloc[i, -11]
-    c10 = mjrd_attr.iloc[i, -10]
-    c9 = mjrd_attr.iloc[i, -9]
-    c8 = mjrd_attr.iloc[i, -8]
-    c7 = mjrd_attr.iloc[i, -7]
-    c6 = mjrd_attr.iloc[i, -6]
-    c5 = mjrd_attr.iloc[i, -5]
-    c4 = mjrd_attr.iloc[i, -4]
-    c3 = mjrd_attr.iloc[i, -3]
-    c2 = mjrd_attr.iloc[i, -2]
-    c1 = mjrd_attr.iloc[i, -1]
-    tc_dict[str(rn)].append([c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13])
-
-# %%
-# 30,944 (15%) roads have been attached with traffic counts
-oprd_edge["traffic_count"] = np.nan
-for i in range(oprd_edge.shape[0]):
-    rn = oprd_edge.loc[i, "road_classification_number"]
-    if pd.isna(rn) is False:
-        if str(rn) in tc_dict.keys():
-            oprd_edge.loc[i, "traffic_count"] = tc_dict[str(rn)][0][0]
