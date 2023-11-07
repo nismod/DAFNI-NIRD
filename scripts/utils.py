@@ -10,6 +10,7 @@ import networkx
 from shapely.geometry import LineString
 from scipy.spatial import cKDTree
 from math import sin, cos, atan2, sqrt, pi
+from collections import defaultdict
 
 
 def components(edges, nodes, node_id_col):
@@ -243,3 +244,43 @@ def getDistanceByHaversine(loc1, loc2):
     c = 2.0 * atan2(sqrt(a), sqrt(1.0 - a))
     km = earthradius * c
     return km
+
+
+def get_flow_on_edges(save_paths_df, edge_id_column, edge_path_column, flow_column):
+    """Get flows from paths onto edges
+    Parameters
+    ---------
+    save_paths_df
+        Pandas DataFrame of OD flow paths and their flow values
+    edge_id_column
+        String name of ID column of edge dataset
+    edge_path_column
+        String name of column which contains edge paths
+    flow_column
+        String name of column which contains flow values
+    Result
+    -------
+    DataFrame with edge_ids and their total flows
+    """
+    """Example:
+        save_path_df:
+            origin_id | destination_id | edge_path          |  flux (or traffic)
+            node_1      node_2          ['edge_1','edge_2']     10
+            node_1      node_3          ['edge_1','edge_3']     20
+        edge_id_column = "edge_id"
+        edge_path_column = "edge_path"
+        flow_column = "traffic"
+        Result
+            edge_id | flux (or traffic)
+            edge_1      30
+            edge_2      10
+            edge_3      20
+    """
+    edge_flows = defaultdict(float)
+    for row in save_paths_df.itertuples():
+        for item in getattr(row, edge_path_column):
+            edge_flows[item] += getattr(row, flow_column)
+
+    return pd.DataFrame(
+        [(k, v) for k, v in edge_flows.items()], columns=[edge_id_column, flow_column]
+    )
