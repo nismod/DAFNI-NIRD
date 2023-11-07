@@ -29,6 +29,7 @@ testpaths = ["tests"]
 
 [tool.ruff]
 src = ["src"]
+line-length = 120
 
 [tool.mypy]
 exclude = ['venv', '.venv', 'build', 'docs']
