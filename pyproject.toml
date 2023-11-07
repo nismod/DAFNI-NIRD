@@ -17,7 +17,15 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["black", "ruff", "mypy", "pre-commit", "pytest", "pytest-cov"]
+dev = [
+    "black",
+    "ruff",
+    "mypy",
+    "pandas-stubs",
+    "pre-commit",
+    "pytest",
+    "pytest-cov"
+]
 docs = ["sphinx", "m2r2"]
 
 [project.urls]
@@ -33,3 +41,15 @@ line-length = 120
 
 [tool.mypy]
 exclude = ['venv', '.venv', 'build', 'docs']
+
+[[tool.mypy.overrides]]
+module = [
+    "geopandas",
+    "igraph",
+    "networkx",
+    "scipy.*",
+    "shapely.*",
+    "skmob.*",
+    "snkit"
+]
+ignore_missing_imports = true

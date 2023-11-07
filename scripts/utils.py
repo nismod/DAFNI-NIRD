@@ -3,17 +3,23 @@
 """
 import os
 import json
-import snkit
+from collections import defaultdict
+from math import sin, cos, atan2, sqrt, pi
+from typing import Dict, List, Optional, Tuple, Union
+
+import geopandas as gpd
+import igraph
+import networkx
 import numpy as np
 import pandas as pd
-import networkx
-from shapely.geometry import LineString
+import snkit
+from shapely.geometry import LineString, Polygon
 from scipy.spatial import cKDTree
-from math import sin, cos, atan2, sqrt, pi
-from collections import defaultdict
 
 
-def components(edges, nodes, node_id_col):
+def components(
+    edges: pd.DataFrame, nodes: pd.DataFrame, node_id_col: str
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
     G = networkx.Graph()
     G.add_nodes_from(
         (getattr(n, node_id_col), {"geometry": n.geometry}) for n in nodes.itertuples()
@@ -31,14 +37,20 @@ def components(edges, nodes, node_id_col):
     return edges, nodes
 
 
-def add_lines(x, from_nodes_df, to_nodes_df, from_nodes_id, to_nodes_id):
+def add_lines(
+    x: pd.DataFrame,
+    from_nodes_df: pd.DataFrame,
+    to_nodes_df: pd.DataFrame,
+    from_nodes_id: str,
+    to_nodes_id: str,
+) -> LineString:
     from_point = from_nodes_df[from_nodes_df[from_nodes_id] == x[from_nodes_id]]
     to_point = to_nodes_df[to_nodes_df[to_nodes_id] == x[to_nodes_id]]
 
     return LineString(from_point.geometry.values[0], to_point.geometry.values[0])
 
 
-def ckdnearest(gdA, gdB):
+def ckdnearest(gdA: gpd.GeoDataFrame, gdB: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     """Taken from https://gis.stackexchange.com/questions/222315/finding-nearest-point-in-other-geodataframe-using-geopandas"""
     nA = np.array(list(gdA.geometry.apply(lambda x: (x.x, x.y))))
     nB = np.array(list(gdB.geometry.apply(lambda x: (x.x, x.y))))
@@ -52,7 +64,7 @@ def ckdnearest(gdA, gdB):
     return gdf
 
 
-def gdf_geom_clip(gdf_in, clip_geom):
+def gdf_geom_clip(gdf_in: gpd.GeoDataFrame, clip_geom: Polygon) -> gpd.GeoDataFrame:
     """Filter a dataframe to contain only features within a clipping geometry
 
     Parameters
@@ -71,12 +83,16 @@ def gdf_geom_clip(gdf_in, clip_geom):
     ].reset_index(drop=True)
 
 
-def get_nearest_values(x, input_gdf, column_name):
+def get_nearest_values(
+    x: gpd.GeoSeries, input_gdf: gpd.GeoDataFrame, column_name: str
+) -> gpd.GeoDataFrame:
     polygon_index = input_gdf.distance(x.geometry).sort_values().index[0]
     return input_gdf.loc[polygon_index, column_name]
 
 
-def extract_gdf_values_containing_nodes(x, input_gdf, column_name):
+def extract_gdf_values_containing_nodes(
+    x: gpd.GeoSeries, input_gdf: gpd.GeoDataFrame, column_name: str
+) -> gpd.GeoSeries:
     a = input_gdf.loc[list(input_gdf.geometry.contains(x.geometry))]
     if len(a.index) > 0:
         return a[column_name].values[0]
@@ -85,19 +101,23 @@ def extract_gdf_values_containing_nodes(x, input_gdf, column_name):
         return input_gdf.loc[polygon_index, column_name]
 
 
-def load_config():
+def load_config() -> Dict[str, Dict[str, str]]:
     """Read config.json"""
     config_path = os.path.join(os.path.dirname(__file__), "..", "..", "config.json")
     with open(config_path, "r") as config_fh:
-        config = json.load(config_fh)
+        config: Dict[str, Dict[str, str]] = json.load(config_fh)
     return config
 
 
 def create_network_from_nodes_and_edges(
-    nodes, edges, node_edge_prefix, snap_distance=None, by=None
-):
+    nodes: Optional[gpd.GeoDataFrame],
+    edges: gpd.GeoDataFrame,
+    node_edge_prefix: str,
+    snap_distance: Optional[float] = None,
+    by: Optional[List[str]] = None,
+) -> snkit.Network:
     edges.columns = map(str.lower, edges.columns)
-    if "id" in edges.columns.values.tolist():
+    if "id" in edges.columns.values.tolist():  # type: ignore
         edges.rename(columns={"id": "e_id"}, inplace=True)
 
     # Deal with empty edges (drop)
@@ -157,7 +177,15 @@ def create_network_from_nodes_and_edges(
     return network
 
 
-def network_od_path_estimations(graph, source, target, cost_criteria):
+NodeEdgeID = Union[str, float, int]
+
+
+def network_od_path_estimations(
+    graph: igraph.Graph,
+    source: NodeEdgeID,
+    target: NodeEdgeID,
+    cost_criteria: str,
+) -> Tuple[List[List[NodeEdgeID]], List[float]]:
     """Estimate the paths, distances, times, and costs for given OD pair
 
     Parameters
@@ -165,28 +193,17 @@ def network_od_path_estimations(graph, source, target, cost_criteria):
     graph
         igraph network structure
     source
-        String/Float/Integer name of Origin node ID
-    source
-        String/Float/Integer name of Destination node ID
-    tonnage : float
-        value of tonnage
-    vehicle_weight : float
-        unit weight of vehicle
-    cost_criteria : str
+        name of Origin node ID
+    target
+        name of Destination node ID
+    cost_criteria
         name of generalised cost criteria to be used: min_gcost or max_gcost
-    time_criteria : str
-        name of time criteria to be used: min_time or max_time
-    fixed_cost : bool
 
     Returns
     -------
-    edge_path_list : list[list]
-        nested lists of Strings/Floats/Integers of edge ID's in routes
-    path_dist_list : list[float]
-        estimated distances of routes
-    path_time_list : list[float]
-        estimated times of routes
-    path_gcost_list : list[float]
+    edge_path_list
+        nested lists of edge ID's in routes
+    path_gcost_list
         estimated generalised costs of routes
 
     """
@@ -199,10 +216,11 @@ def network_od_path_estimations(graph, source, target, cost_criteria):
     # for p in range(len(paths)):
     for path in paths:
         edge_path = []
-        path_gcost = 0
+        path_gcost = 0.0
         if path:
             for n in path:
-                edge_path.append(graph.es[n]["edge_id"])
+                edge_id: NodeEdgeID = graph.es[n]["edge_id"]
+                edge_path.append(edge_id)
                 path_gcost += graph.es[n][cost_criteria]
 
         edge_path_list.append(edge_path)
@@ -222,14 +240,11 @@ degreeInKms = kmsPerNauticalMile * 60
 # earth's mean radius = 6,371km
 earthradius = 6371.0
 
-
-def getDistance(loc1, loc2):
-    "aliased default algorithm; args are (lat_decimal,lon_decimal) tuples"
-    return getDistanceByHaversine(loc1, loc2)
+Number = Union[float, int]
 
 
-def getDistanceByHaversine(loc1, loc2):
-    "Haversine formula - give coordinates as (lat_decimal,lon_decimal) tuples"
+def getDistance(loc1: Tuple[Number, Number], loc2: Tuple[Number, Number]) -> float:
+    """Haversine formula - give coordinates as (lat_decimal,lon_decimal) tuples"""
     lat1, lon1 = loc1
     lat2, lon2 = loc2
     # convert to radians
@@ -246,7 +261,12 @@ def getDistanceByHaversine(loc1, loc2):
     return km
 
 
-def get_flow_on_edges(save_paths_df, edge_id_column, edge_path_column, flow_column):
+def get_flow_on_edges(
+    save_paths_df: pd.DataFrame,
+    edge_id_column: str,
+    edge_path_column: str,
+    flow_column: str,
+) -> pd.DataFrame:
     """Get flows from paths onto edges
     Parameters
     ---------
@@ -276,7 +296,7 @@ def get_flow_on_edges(save_paths_df, edge_id_column, edge_path_column, flow_colu
             edge_2      10
             edge_3      20
     """
-    edge_flows = defaultdict(float)
+    edge_flows: Dict[str, float] = defaultdict(float)
     for row in save_paths_df.itertuples():
         for item in getattr(row, edge_path_column):
             edge_flows[item] += getattr(row, flow_column)

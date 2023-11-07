@@ -1,13 +1,14 @@
 # %%
 from pathlib import Path
 from collections import defaultdict
+from typing import Dict, List
 
 import geopandas as gpd
 import networkx as nx
 import snkit
 from skmob.models.radiation import Radiation
 
-from utils import create_network_from_nodes_and_edges, load_config
+from utils import Number, create_network_from_nodes_and_edges, load_config
 
 network = snkit.Network()
 radiationFun = Radiation()
@@ -161,7 +162,9 @@ test_flow.to_csv(
 
 # %%
 # for visualization
-test_flow_dict = defaultdict(lambda: defaultdict(list))
+test_flow_dict: Dict[str, Dict[str, List[Number]]] = defaultdict(
+    lambda: defaultdict(list)
+)
 for i in range(test_flow.shape[0]):
     from_id = test_flow.loc[i, "origin"]
     to_id = test_flow.loc[i, "destination"]
