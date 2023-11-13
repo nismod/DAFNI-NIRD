@@ -1,3 +1,4 @@
+# %%
 from pathlib import Path
 
 import pandas as pd
@@ -5,6 +6,7 @@ import geopandas as gpd
 
 from utils import load_config
 
+# %%
 # network attributes
 # total population (P)
 # traveller (T)
@@ -25,12 +27,35 @@ local_authority_file["area_m2"] = local_authority_file.geometry.area
 la_population = pd.read_excel(
     base_path / "inputs" / "incoming_data" / "census" / "population_density.xlsx"
 )
+la_population = la_population.rename(
+    columns={"Population_2021": "Population_Density_2021"}
+)
+
+#!!! update ["Area code", "Commuters_2021"]
+"""
 la_commuter = pd.read_excel(
     base_path / "inputs" / "incoming_data" / "census" / "commuter_england_wales.xlsx"
 )
+"""
+la_commuter = pd.read_excel(
+    r"C:\Oxford\Research\DAFNI\local\inputs\incoming_data\census\TS061-2021-4.xlsx"
+)
+la_commuter = la_commuter.loc[la_commuter.iloc[:, 2].isin([4, 5, 6, 7, 8, 11])]
+la_commuter = la_commuter.groupby(
+    by=["Lower tier local authorities Code"], as_index=False
+).agg({"Observation": "sum"})
+la_commuter = la_commuter.rename(
+    columns={
+        "Lower tier local authorities Code": "Area code",
+        "Observation": "Commuters_2021",
+    }
+)
+
 la_employment = pd.read_excel(
     base_path / "inputs" / "incoming_data" / "census" / "employment_england_wales.xlsx"
 )
+
+# %%
 df_attr = local_authority_file[["LAD22CD", "area_m2", "geometry"]]
 df_attr = df_attr.rename(columns={"LAD22CD": "Area code"})
 df_attr = df_attr.merge(la_population, on="Area code")
@@ -39,11 +64,11 @@ df_attr = df_attr.merge(la_employment, on="Area code")
 df_attr = df_attr[
     [
         "Area code",
-        "Area name_x",
+        "Area name",
         "geometry",
         "area_m2",
-        "Population_2021",
-        "Commuters",
+        "Population_Density_2021",
+        "Commuters_2021",
         "Employment_2021",
     ]
 ].rename(
@@ -51,10 +76,11 @@ df_attr = df_attr[
         "Area code": "LAD_code",
         "Area name_x": "LAD_name",
         "area_m2": "LAD_area_m2",
-        "Commuters": "Commuters_2021",
-        "Population_2021": "Population_Density_2021",
+        # "Commuters": "Commuters_2021",
+        # "Population_2021": "Population_Density_2021",
     }
 )
+
 df_attr["Population_2021"] = (
     df_attr.LAD_area_m2 * df_attr.Population_Density_2021 * 1e-6
 )
@@ -71,6 +97,7 @@ df_attr2.to_excel(
 )
 """
 
+# %%
 # OA (output area, smallest administration level)
 # look-up-table: from oa to lad
 lut_file = pd.read_excel(
@@ -94,18 +121,6 @@ oa_london["OA_code"] = oa_london.geo_code
 oa_london["LAD_code"] = oa_london.OA_code.apply(lambda x: oa_to_lad.get(x))
 df_attr_oa = oa_london[["OA_code", "geometry", "tt_pop_oa", "area_m2_oa", "LAD_code"]]
 df_attr_oa = df_attr_oa.merge(df_attr2, on="LAD_code")
-df_attr_oa2 = df_attr_oa.drop(columns=["geometry"])  # dataframe
-
-"""
-df_attr_oa.to_file(
-    base_path / "inputs" / "processed_data" / "census" / "london.gpkg",
-    driver="GPKG",
-    layer="OA",
-)
-df_attr_oa2.to_excel(
-    base_path / "inputs" / "processed_data" / "census" / "oa_attr.xlsx", index=False
-)
-"""
 
 # %%
 # estimate employment and travellers at the OA level
@@ -123,11 +138,15 @@ df_attr_oa["outflow_oa"] = (
 )
 df_attr_oa.loc[df_attr_oa[df_attr_oa.employment_oa < 0].index, "employment_oa"] = 0
 df_attr_oa.loc[df_attr_oa[df_attr_oa.outflow_oa < 0].index, "outflow_oa"] = 0
+df_attr_oa2 = df_attr_oa.drop(columns=["geometry"])  # dataframe
 
 """
 df_attr_oa.to_file(
     base_path / "inputs" / "processed_data" / "census" / "london.gpkg",
     driver="GPKG",
     layer="OA",
+)
+df_attr_oa2.to_excel(
+    base_path / "inputs" / "processed_data" / "census" / "oa_attr.xlsx", index=False
 )
 """

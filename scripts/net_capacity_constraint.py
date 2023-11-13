@@ -1,18 +1,18 @@
 # %%
-
 from pathlib import Path
 from collections import defaultdict
 
 import geopandas as gpd
-import networkx as nx
+
+# import networkx as nx
 import pandas as pd
 import numpy as np
+import igraph
 
-import snkit
 from skmob.models.radiation import Radiation
-from utils import load_config, getDistance
+from utils import load_config, getDistance, get_flow_on_edges
 
-network = snkit.Network()
+# network = snkit.Network()
 radiationFun = Radiation()
 
 base_path = Path(load_config()["paths"]["base_path"])
@@ -31,96 +31,128 @@ oprd_node["lon"] = oprd_node.geometry.x
 # edge file
 oprd_edge = gpd.read_file(
     base_path / "inputs" / "processed_data" / "road" / "cliped_file.gpkg",
-    layer="oproad_cliped",
+    layer="oproad_edges_major_roads",  # only select the major roads
 )
 oprd_edge["e_id"] = oprd_edge.id
 oprd_edge["from_id"] = oprd_edge.start_node
 oprd_edge["to_id"] = oprd_edge.end_node
 
 # %%
-# Network Configuration
-# attributes file
-oa_attr = gpd.read_file(
-    base_path / "inputs" / "processed_data" / "census" / "london.gpkg",
-    layer="LAD",
+# import o-d matrix for calibration
+od_file = pd.read_csv(
+    base_path
+    / "inputs"
+    / "incoming_data"
+    / "census"
+    / "MSOA_collection"
+    / "ODWP01EW_MSOA.csv"
 )
-oa_attr["centroid"] = oa_attr.centroid  # point geometry
+od_file = od_file[od_file["Place of work indicator (4 categories) code"] == 3]
+od_file.reset_index(drop=True, inplace=True)
+od_dict = defaultdict(lambda: defaultdict(list))
+for i in range(od_file.shape[0]):
+    from_lad = od_file.loc[i, "Middle layer Super Output Areas code"]
+    to_lad = od_file.loc[i, "MSOA of workplace code"]
+    count = od_file.loc[i, "Count"]
+    od_dict[from_lad][to_lad] = count
 
+# %%
+# Network configuration (MSOA level)
+lad_attr = gpd.read_file(
+    base_path / "inputs" / "processed_data" / "census" / "MSOA.gpkg",
+    layer="MSOA_attr_london_cliped",  #!!! update
+)  # outflow (by roads) and inflow (opportunities)
 
-oa_centroid = oa_attr[
-    ["LAD_code", "tt_pop_2021", "Employment_2021", "Commuters_2021", "centroid"]
-].rename(columns={"LAD_code": "lad_id", "centroid": "geometry"})
+lad_attr["centroid"] = lad_attr.centroid
+lad_centroid = lad_attr[
+    [
+        "MSOA_CODE",
+        "Inflow_2021",
+        "Outflow_2021",
+        "total_commuters",
+        "road_commuters",
+        "WKPOP_2021",
+        "centroid",
+    ]
+].rename(columns={"centroid": "geometry"})
 
+lad_dict = defaultdict(list)
+for i in range(lad_centroid.shape[0]):
+    lad_id = lad_centroid.loc[i, "MSOA_CODE"]
+    inflow = lad_centroid.loc[i, "Inflow_2021"]
+    outflow = lad_centroid.loc[i, "Outflow_2021"]
+    tt_comm = lad_centroid.loc[i, "total_commuters"]
+    rd_comm = lad_centroid.loc[i, "road_commuters"]
+    wk_pop = (lad_centroid.loc[i, "WKPOP_2021"],)
+    xi = lad_centroid.loc[i, "geometry"].x
+    yi = lad_centroid.loc[i, "geometry"].y
+    lad_dict[lad_id].append([inflow, outflow, tt_comm, rd_comm, wk_pop, xi, yi])
 
-# nodes: x-y
+# %%
+# nodes of the road network: x-y
 nodes_dict = defaultdict(list)
 for i in range(oprd_node.shape[0]):
     nodes_dict[str(oprd_node.loc[i, "nd_id"])].append(
         [oprd_node.loc[i, "lon"], oprd_node.loc[i, "lat"]]
     )
 
-# OA: x-y, tt_pop, wk_pop
-oa_dict = defaultdict(list)
-for i in range(oa_attr.shape[0]):
-    oa_id = oa_centroid.loc[i, "lad_id"]
-    xi = oa_centroid.loc[i, "geometry"].x
-    yi = oa_centroid.loc[i, "geometry"].y
-    pi = oa_centroid.loc[i, "tt_pop_2021"]
-    ei = oa_centroid.loc[i, "Employment_2021"]
-    ti = oa_centroid.loc[i, "Commuters_2021"]
-    oa_dict[str(oa_id)].append([pi, ei, ti, xi, yi])
-
 # inner: use the intersection index; retain the left geometry (which is oa in this case)
-oa_nd_sj = oa_attr.sjoin(oprd_node, how="inner", predicate="intersects")
+lad_nd_sj = lad_attr.sjoin(oprd_node, how="inner", predicate="intersects")
 
 # geometry: polygon
-oa_nd_sj.reset_index(drop=True, inplace=True)
-oa_nd_sj["dist"] = np.nan
-for i in range(oa_nd_sj.shape[0]):
-    oa_id = str(oa_nd_sj.loc[i, "LAD_code"])
-    nd_id = str(oa_nd_sj.loc[i, "nd_id"])
-    if str(oa_id) in oa_dict.keys() and str(nd_id) in nodes_dict.keys():
-        dist_oa_nd = getDistance(
-            (oa_dict[str(oa_id)][0][-1], oa_dict[str(oa_id)][0][-2]),
+lad_nd_sj.reset_index(drop=True, inplace=True)
+lad_nd_sj["dist"] = np.nan
+for i in range(lad_nd_sj.shape[0]):
+    lad_id = str(lad_nd_sj.loc[i, "MSOA_CODE"])
+    nd_id = str(lad_nd_sj.loc[i, "nd_id"])
+    if str(lad_id) in lad_dict.keys() and str(nd_id) in nodes_dict.keys():
+        dist_lad_nd = getDistance(
+            (lad_dict[str(lad_id)][0][-1], lad_dict[str(lad_id)][0][-2]),
             (nodes_dict[str(nd_id)][0][1], nodes_dict[str(nd_id)][0][0]),
         )
         # the distance between the centroid of OA and each node located within the OA
-        oa_nd_sj.loc[i, "dist"] = dist_oa_nd
+        lad_nd_sj.loc[i, "dist"] = dist_lad_nd
 
 # identify the closest node in the network
-oa_nd_sj_gp = oa_nd_sj.groupby(by=["LAD_code"], as_index=False).agg(
+lad_nd_sj_gp = lad_nd_sj.groupby(by=["MSOA_CODE"], as_index=False).agg(
     {"nd_id": list, "dist": list}
 )
-oa_nd_sj_gp = oa_nd_sj_gp.rename(columns={"LAD_code": "lad_id"})
-oa_nd_dict = {}
-for i in range(oa_nd_sj_gp.shape[0]):
-    idx = oa_nd_sj_gp.loc[i, "dist"].index(min(oa_nd_sj_gp.loc[i, "dist"]))
-    sel_nd_id = oa_nd_sj_gp.loc[i, "nd_id"][idx]
-    oa_nd_dict[str(sel_nd_id)] = oa_nd_sj_gp.loc[i, "lad_id"]
+# lad_nd_sj_gp = lad_nd_sj_gp.rename(columns={"MSOA_CODE": "lad_id"})
+lad_nd_dict = {}
+for i in range(lad_nd_sj_gp.shape[0]):
+    idx = lad_nd_sj_gp.loc[i, "dist"].index(min(lad_nd_sj_gp.loc[i, "dist"]))
+    sel_nd_id = lad_nd_sj_gp.loc[i, "nd_id"][idx]
+    lad_nd_dict[str(sel_nd_id)] = lad_nd_sj_gp.loc[i, "MSOA_CODE"]
 
-#!!! assumption: attach the centroid of each OA to the nearest node point of the network
+# assumption: attach the centroid of each LAD to the nearest node point of the network
 # for analysis (33 LAD cliped for London)
-oprd_node["population"] = 0
-oprd_node["employment"] = 0
-oprd_node["outflow"] = 0
+oprd_node["inflow"] = 0.0
+oprd_node["outflow"] = 0.0
+oprd_node["tt_commuter"] = 0.0
+oprd_node["rd_commuter"] = 0.0
+oprd_node["wk_pop"] = 0.0
 for i in range(oprd_node.shape[0]):
     nd_id = oprd_node.loc[i, "nd_id"]
-    if nd_id in oa_nd_dict.keys():
-        oa_id = oa_nd_dict[nd_id]
+    if nd_id in lad_nd_dict.keys():
+        lad_id = lad_nd_dict[nd_id]
         try:
-            pi = oa_dict[oa_id][0][0]
-            ei = oa_dict[oa_id][0][1]
-            ti = oa_dict[oa_id][0][2]
-            oprd_node.loc[i, "population"] = pi
-            oprd_node.loc[i, "employment"] = ei
-            oprd_node.loc[i, "outflow"] = ti
+            inflow = lad_dict[lad_id][0][0]
+            outflow = lad_dict[lad_id][0][1]
+            tt_comm = lad_dict[lad_id][0][2]
+            rd_comm = lad_dict[lad_id][0][3]
+            wk_pop = lad_dict[lad_id][0][4]
+            oprd_node.loc[i, "inflow"] = inflow
+            oprd_node.loc[i, "outflow"] = outflow
+            oprd_node.loc[i, "tt_commuter"] = tt_comm
+            oprd_node.loc[i, "rd_commuter"] = rd_comm
+            oprd_node.loc[i, "wk_pop"] = wk_pop
         except Exception as e:
             print(e)
 
 # %%
 # Network Creation
-# delete the edges of which any end node is not in the nodes list (dangling edges)
-nodeset = set(oprd_node.nd_id.unique())  # 167,903
+# delete the dangling edges
+nodeset = set(oprd_node.nd_id.unique())
 idxList = []
 for i in range(oprd_edge.shape[0]):  # 210,611
     from_id = oprd_edge.loc[i, "from_id"]
@@ -128,130 +160,207 @@ for i in range(oprd_edge.shape[0]):  # 210,611
     if (from_id in nodeset) and (to_id in nodeset):
         idxList.append(i)
 
-oprd_edge = oprd_edge[oprd_edge.index.isin(idxList)]
+oprd_edge = oprd_edge[oprd_edge.index.isin(idxList)]  # 210,611
 oprd_edge.reset_index(drop=True, inplace=True)  # 210,247
 
-# create an igraph network
-# to use get_shortest_paths(): one-to-multiple
-"""
-Structure of Elements:
-nodes = [(1, {"latitude": x, "longitude": x}),
-(2...)]
-egdes = [(1,2, {"length": x}), ()...]
-"""
+# delete the hanging nodes
+nodeset = set(oprd_edge.from_id.tolist() + oprd_edge.to_id.tolist())
+idxList = []
+for i in range(oprd_node.shape[0]):
+    node_id = oprd_node.loc[i, "nd_id"]
+    if node_id in nodeset:
+        idxList.append(i)
+
+oprd_node = oprd_node[oprd_node.index.isin(idxList)]  # 167,903
+oprd_node.reset_index(drop=True, inplace=True)  # 167,860
+
+# relationship between node indexes and names
 name_to_index = {
     name: index for index, name in enumerate(oprd_node.nd_id)
 }  #!!! this is important: to convert the nd_id (str) into index (int)
 index_to_name = {value: key for key, value in name_to_index.items()}
-nodeList = [name_to_index[oprd_node.loc[i, "id"]] for i in range(oprd_node.shape[0])]
+
+# relationship between edges and nodes
+nodes_to_edge = {}
+for i in range(oprd_edge.shape[0]):
+    e_id = oprd_edge.loc[i, "e_id"]
+    from_id = oprd_edge.loc[i, "from_id"]
+    to_id = oprd_edge.loc[i, "to_id"]
+    node_set = frozenset([from_id, to_id])  # !!! frozenset
+    nodes_to_edge[node_set] = e_id
+
+# create a networkx network
+# to use single_source_dijkstra(): cut-off parameter
+nodeList = [
+    (name_to_index[oprd_node.loc[i, "id"]], {"nd_id": oprd_node.loc[i, "id"]})
+    for i in range(oprd_node.shape[0])
+]
+
 edge_and_weight = [
     (
+        oprd_edge.loc[i, "e_id"],
         oprd_edge.loc[i, "from_id"],
         oprd_edge.loc[i, "to_id"],
         oprd_edge.loc[i, "geometry"].length,
     )
     for i in range(oprd_edge.shape[0])
 ]
+
 """
 edgeList = [
-    (name_to_index[source], name_to_index[target])
-    for source, target, weight in edge_and_weight
-]
-weightList = [weight for source, target, weight in edge_and_weight]
-test_net = igraph.Graph(directed=False)
-test_net.add_vertices(nodeList)
-test_net.add_edges(edgeList)
-test_net.es["weight"] = weightList
-"""
-# create a networkx network
-# to use single_source_dijkstra(): cut-off parameter
-test_net2 = nx.Graph()
-test_net2.add_nodes_from(nodeList)
-edgeList2 = [
     (name_to_index[source], name_to_index[target], {"weight": weight})
     for source, target, weight in edge_and_weight
 ]
-# This is a complete network comprising all the original nodes and edges
-# (open road dataset)
-test_net2.add_edges_from(edgeList2)
+
+test_net2 = nx.Graph()
+test_net2.add_nodes_from(nodeList)
+test_net2.add_edges_from(edgeList)
+"""
+
+# create a igraph-based network
+edgeList_ig = [
+    (name_to_index[source], name_to_index[target])
+    for _, source, target, _ in edge_and_weight
+]
+
+weightList_ig = [weight for _, _, _, weight in edge_and_weight]
+edgeNameList_id = [e_name for e_name, _, _, _ in edge_and_weight]
+
+test_net = igraph.Graph(directed=False)
+test_net.add_vertices(nodeList)
+test_net.add_edges(edgeList_ig)
+test_net.es["weight"] = weightList_ig
+test_net.es["edge_name"] = edgeNameList_id
 
 # %%
 # Network Analysis
 # drop nodes with zero population or zero working population before modelling flows
-oprd_node.population = oprd_node.population.astype(np.float64)
-oprd_node.employment = oprd_node.employment.astype(np.float64)
-oprd_node.outflow = oprd_node.outflow.astype(np.float64)
+oprd_node = oprd_node[(oprd_node.inflow != 0) & (oprd_node.outflow != 0)]
+oprd_node.reset_index(drop=True, inplace=True)
 
-oprd_node = oprd_node[
-    (oprd_node.population != 0) & (oprd_node.employment != 0) & (oprd_node.outflow != 0)
-]
-oprd_node.reset_index(drop=True, inplace=True)  # 19,716 none zero nodes
+# to estimate the outflow by roads
+oprd_node["outflow_by_roads"] = (
+    oprd_node.rd_commuter / oprd_node.tt_commuter * oprd_node.outflow
+)
 
 # %%
-# (1) Add a searching constraint to flow simulation
+# Start the calibration
+alpha_list = []
+error_list = []
+
+alpha = 0.09
+# [0, 0.1], step = 0.01
+# [0.09, 0.1], step = 0.001
+while 0 <= alpha < 0.1:  # city level: 0 < alpha < 0.1
+    print(alpha)
+    test_flow = radiationFun.generate(
+        oprd_node,
+        name_to_index,
+        index_to_name,
+        nodes_to_edge,  # add: relationship between edges and nodes
+        test_net,  # test_net: igraph; test_net2: networkx
+        cut_off=None,  # distance/time, depending on "weight" in the network
+        alpha=alpha,  # spatial calibration factor
+        tile_id_column="nd_id",
+        tot_outflows_column="outflow_by_roads",  # commuters between different zones
+        employment_column="inflow",  # employment opportunities
+        relevance_column="wk_pop",  # total population
+        out_format="flows_sample",
+    )
+
+    test_flow["from_lad"] = test_flow["origin_id"].map(lad_nd_dict)
+    test_flow["to_lad"] = test_flow["destination_id"].map(lad_nd_dict)
+
+    # calculate the sum of the errors
+    test_flow["Counts"] = np.nan
+    for i in range(test_flow.shape[0]):
+        from_lad = test_flow.loc[i, "from_lad"]
+        to_lad = test_flow.loc[i, "to_lad"]
+        if from_lad in od_dict.keys():
+            if to_lad in od_dict[from_lad].keys():
+                count = od_dict[from_lad][to_lad]
+                test_flow.loc[i, "Counts"] = count
+    test_flow["Errors"] = test_flow.flux - test_flow.Counts
+    test_flow.Errors = test_flow.Errors.fillna(0.0)
+    sum_error = np.abs(test_flow.Errors).sum()
+
+    alpha_list.append(alpha)
+    error_list.append(sum_error)
+
+    alpha += 0.01
+
+# %%
+# city-level simulation
+# best alpha is 0.1
 test_flow = radiationFun.generate(
     oprd_node,
     name_to_index,
     index_to_name,
-    test_net2,
-    cut_off=20_000,  # distance/time, depending on "weight" in the network
+    nodes_to_edge,  # add: relationship between edges and nodes
+    test_net,
+    cut_off=None,  # distance/time, depending on "weight" in the network
+    alpha=0.1,  # spatial calibration factor
     tile_id_column="nd_id",
-    tot_outflows_column="outflow",
-    employment_column="employment",
-    relevance_column="population",
+    tot_outflows_column="outflow_by_roads",  # commuters between different zones
+    employment_column="inflow",  # employment opportunities
+    relevance_column="inflow",  # total population
     out_format="flows_sample",
 )
 
-# test_flow.to_csv(
-# r"outputs\test_flow_1000.csv", index = False)
-
 # %%
-# (2) Add a capacity constraint to flow simulation
-"""
-To include capacity constraint, we need to iteratively assign the outflow into the
-network to calculate the flow; once a road segment exceeds its capacity, it will be
-excluded from analysis in the next round of simulation;
+# to export OD matrix
+test_flow["from_lad"] = test_flow["origin_id"].map(lad_nd_dict)
+test_flow["to_lad"] = test_flow["destination_id"].map(lad_nd_dict)
+test_flow.to_csv(base_path / "outputs" / "od_msoa_1108.csv", index=False)
 
-1. How to determine the order for assigning origins to the network?
-Random Seeds
-2. How many initial flows should be assigned to the network iteratively?
-One-by-one until the first q roads get congested
-3. Stoping criteria?
-Until all the travellers have been assigned to the network
-"""
-# attach the capacity info (traffic counts) to open road networks
-mjrd_attr = pd.read_csv(
-    base_path
-    / "inputs"
-    / "incoming_data"
-    / "road"
-    / "dft_traffic_counts_aadf"
-    / "dft_traffic_counts_aadf.csv"
-)
-# annual average daily traffic flow (counts/day-type)
-tc_dict = defaultdict(list)
-for i in range(mjrd_attr.shape[0]):
-    rn = mjrd_attr.loc[i, "Road_name"]
-    c13 = mjrd_attr.iloc[i, -13]
-    c12 = mjrd_attr.iloc[i, -12]
-    c11 = mjrd_attr.iloc[i, -11]
-    c10 = mjrd_attr.iloc[i, -10]
-    c9 = mjrd_attr.iloc[i, -9]
-    c8 = mjrd_attr.iloc[i, -8]
-    c7 = mjrd_attr.iloc[i, -7]
-    c6 = mjrd_attr.iloc[i, -6]
-    c5 = mjrd_attr.iloc[i, -5]
-    c4 = mjrd_attr.iloc[i, -4]
-    c3 = mjrd_attr.iloc[i, -3]
-    c2 = mjrd_attr.iloc[i, -2]
-    c1 = mjrd_attr.iloc[i, -1]
-    tc_dict[str(rn)].append([c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13])
+# to export Edge Flux
+# convert from flux to traffic (Oab -> Tij)
+edge_flows = get_flow_on_edges(test_flow, "e_id", "edge_path", "flux")
+# post process of edge flows
+edge_id_to_name = {id: name for id, name in enumerate(test_net.es["edge_name"])}
+edge_flows["e_id"] = edge_flows.e_id.map(edge_id_to_name)
+edge_flows.to_csv(base_path / "outputs" / "edge_flow_msoa_1108.csv", index=False)
 
-# %%
-# 30,944 (15%) roads have been attached with traffic counts
-oprd_edge["traffic_count"] = np.nan
+oprd_edge["flux"] = np.nan
+flux_dict = {}
+for i in range(edge_flows.shape[0]):
+    e_id = edge_flows.loc[i, "e_id"]
+    flux_i = edge_flows.loc[i, "flux"]
+    flux_dict[e_id] = flux_i
+
 for i in range(oprd_edge.shape[0]):
-    rn = oprd_edge.loc[i, "road_classification_number"]
-    if pd.isna(rn) is False:
-        if str(rn) in tc_dict.keys():
-            oprd_edge.loc[i, "traffic_count"] = tc_dict[str(rn)][0][0]
+    e_id = oprd_edge.loc[i, "e_id"]
+    if e_id in flux_dict.keys():
+        oprd_edge.loc[i, "flux"] = flux_dict[e_id]
+
+#!!! to export the edge flow results
+oprd_edge.to_file(
+    base_path / "inputs" / "processed_data" / "road" / "cliped_file.gpkg",
+    layer="oprd_cliped_flux",
+    driver="GPKG",
+)
+
+# %%
+# combine major roads attr to shapefile
+major_road_file = gpd.read_file(
+    base_path / "inputs" / "processed_data" / "road" / "cliped_file.gpkg",
+    layer="major_road_cliped",
+)
+major_road_file.CP_Number = major_road_file.CP_Number.astype(int)
+major_road_file = major_road_file[["CP_Number", "RoadNumber", "geometry"]]
+
+mr_attr_2021 = pd.read_csv(
+    r"C:\Oxford\Research\DAFNI\local\inputs\incoming_data\road\mrdb-traffic counts\dft_traffic_counts_aadf_2021.csv"
+)
+mr_attr_2021 = mr_attr_2021.rename(columns={"Count_point_id": "CP_Number"})
+mr_attr_2021_dict = mr_attr_2021.set_index("CP_Number")["commuters_vehicles"]
+major_road_file = major_road_file.merge(
+    mr_attr_2021[["CP_Number", "commuters_vehicles"]], how="left", on="CP_Number"
+)
+
+#!!! observations
+major_road_file.to_file(
+    base_path / "inputs" / "processed_data" / "road" / "cliped_file.gpkg",
+    driver="GPKG",
+    layer="major_road_cliped",
+)
