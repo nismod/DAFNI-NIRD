@@ -1,0 +1,18 @@
+name: nird
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.12
+  - black
+  - make
+  - m2r2
+  - mypy
+  - pre-commit
+  - pytest
+  - pytest-cov
+  - ruff
+  - sphinx
+  - pip
+  - pip:
+      - --editable .

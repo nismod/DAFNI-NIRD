@@ -1,0 +1,30 @@
+name: skmob
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.10
+  - black
+  - make
+  - m2r2
+  - mypy
+  - pre-commit
+  - pytest
+  - pytest-cov
+  - ruff
+  - sphinx
+  - pip
+  - pandas
+  - python-igraph=0.9.*
+  - powerlaw
+  - tqdm
+  - requests
+  - scikit-learn
+  - folium
+  - geojson
+  - h3
+  - pooch
+  - statsmodels
+  - geopandas
+  - jupyter
+  - ipykernel
