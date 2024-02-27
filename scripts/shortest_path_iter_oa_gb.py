@@ -536,9 +536,9 @@ while total_remain > 0:  # iter_flag:
     temp_edge_flow["remaining_capacity"] = (
         temp_edge_flow.temp_acc_capacity - temp_edge_flow.adjusted_flow
     )
-    temp_edge_flow.loc[
-        temp_edge_flow.remaining_capacity < 0, "remaining_capacity"
-    ] = 0.0  # capacity is non-negative
+    temp_edge_flow.loc[temp_edge_flow.remaining_capacity < 0, "remaining_capacity"] = (
+        0.0  # capacity is non-negative
+    )
 
     # update three dicts for next iteration
     # accumulated flows that have been assigned (temp: total_flow)
