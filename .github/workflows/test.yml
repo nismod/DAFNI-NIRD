@@ -27,8 +27,11 @@ jobs:
           pip install --verbose .[dev]
 
       - name: Format check with black
-        run: |
-          black --check --verbose .
+        uses: psf/black@stable
+        with:
+          options: "--check --verbose"
+          src: "."
+          version: "~= 24.2"
 
       - name: Lint with ruff
         run: |
