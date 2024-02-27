@@ -40,7 +40,7 @@ src = ["src"]
 line-length = 120
 
 [tool.mypy]
-exclude = ['venv', '.venv', 'build', 'docs']
+exclude = ['venv', '.venv', 'build', 'docs', 'scripts', 'code_copies']
 
 [[tool.mypy.overrides]]
 module = [
