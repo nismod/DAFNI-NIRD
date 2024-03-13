@@ -1,5 +1,4 @@
 # %%
-from typing import Union
 from pathlib import Path
 
 import numpy as np
@@ -11,196 +10,78 @@ import igraph  # type: ignore
 from tqdm.auto import tqdm
 
 from utils import load_config, get_flow_on_edges
+import constants as cons
+import functions as func
 
+import json
 import warnings
 
 warnings.simplefilter("ignore")
 
 base_path = Path(load_config()["paths"]["base_path"])
 
-CONV_METER_TO_MILE = 0.000621371
-CONV_MILE_TO_KM = 1.60934
-CONV_KM_TO_MILE = 0.621371
-PENCE_TO_POUND = 0.01
-
-"""
-road_type: M, A, B
-form_of_road: collapsed dual/dual, single, roundabout/slip
-urban form: urban (maximum speed limit: 30 mph)
-"""
-flow_breakpoint_dict = {"M": 1200, "A": 1080}  # pcph
-flow_cap_dict = {
-    "M": 54000,  # 80000
-    "A_dual": 54000,  # 80000,
-    "A_single": 38400,
-    "B": 33600,
-}
-free_flow_speed_dict = {
-    "M": 67.0,
-    "A_dual": 45.0,
-    "A_single": 37.0,
-    "B": 37.0,
-}
-
-min_speed_cap = {
-    "M": 1.0,
-    "A_dual": 0.2,
-    "A_single": 0.2,
-    "B": 0.4,
-}  # while B is constant in this model
-
-
-# %%
-# function
-def voc_func(speed: float) -> float:  # speed: mile/hour
-    # d = distance * conv_mile_to_km  # km
-    s = speed * CONV_MILE_TO_KM  # km/hour
-    lpkm = 0.178 - 0.00299 * s + 0.0000205 * (s**2)  # fuel cost (liter/km)
-    c = 140 * lpkm * PENCE_TO_POUND  # average petrol cost: 140 pence/liter
-    return c  # pound/km
-
-
-def cost_func(
-    time: float, distance: float, voc: float
-) -> float:  # time: hour, distance: mile/hour, voc: pound/km
-    ave_occ = 1.6
-    vot = 20  # value of time: pounds/hour
-    d = distance * CONV_MILE_TO_KM  # km
-    t = time + d * voc / (ave_occ * vot)
-    return t  # hour
-
-
-# speed functions
-def initial_speed_func(road_type: str, form_of_road: str) -> Union[float, None]:
-    if road_type == "M":
-        return free_flow_speed_dict["M"]
-    elif road_type == "A":
-        if form_of_road == "Single Carriageway":
-            return free_flow_speed_dict["A_single"]
-        else:
-            return free_flow_speed_dict["A_dual"]
-    elif road_type == "B":
-        return free_flow_speed_dict["B"]
-    else:
-        print("Error: initial speed!")
-        return None
-
-
-def speed_flow_func(
-    road_type: str, form_of_road: str, isurban: int, vp: float
-) -> Union[float, None]:
-    vp = vp / 24
-    if road_type == "M":
-        initial_speed = free_flow_speed_dict["M"]
-        if vp > 1200:  # speed starts to decrease
-            vt = max((initial_speed - 0.033 * (vp - 1200)), min_speed_cap["M"])
-            if isurban:
-                return min(47.0, vt)
-            else:
-                return vt
-        else:
-            if isurban:
-                return min(47.0, initial_speed)
-            else:
-                return initial_speed
-    elif road_type == "A":
-        if form_of_road == "Single Carriageway":
-            initial_speed = free_flow_speed_dict["A_single"]
-            if vp > 1200:
-                vt = max(
-                    (initial_speed - 0.05 * (vp - 1200)), min_speed_cap["A_single"]
-                )
-                if isurban:
-                    return min(30.0, vt)
-                else:
-                    return vt
-            else:
-                if isurban:
-                    return min(30.0, initial_speed)
-                else:
-                    return initial_speed
-        else:
-            initial_speed = free_flow_speed_dict["A_dual"]
-            if vp > 1080:
-                vt = max((initial_speed - 0.033 * (vp - 1080)), min_speed_cap["A_dual"])
-                if isurban:
-                    return min(30.0, vt)
-                else:
-                    return vt
-            else:
-                if isurban:
-                    return min(30.0, initial_speed)
-                else:
-                    return initial_speed
-    elif road_type == "B":
-        initial_speed = free_flow_speed_dict["B"]
-        if isurban:
-            return min(30.0, initial_speed)
-        else:
-            return initial_speed
-    else:
-        print("Please select the road type from [M, A, B]!")
-        return None
-
-
-def filter_less_than_one(arr: np.ndarray) -> np.ndarray:
-    return np.where(arr >= 1, arr, 0)
-
 
 # %%
 """
 list of inputs:
-    (1) OS open roads.
-    (2) Urban mask.
-    (2) Population-weighed centroids of admin units.
-    (3) O-D matrix (*travel to work by car).
-"""
+ - Parameter dicts.
+ - OS open roads.
+ - ETISPLUS_urban_roads: to create urban mask.
+ - Population-weighed centroids of admin units.
+ - O-D matrix (*travel to work by car).
 
-# input1: OS Open Roads
+"""
+# model parameters
+with open(base_path / "parameters" / "flow_breakpoint_dict.json", "r") as f:
+    flow_breakpoint_dict = json.load(f)
+
+with open(base_path / "parameters" / "flow_cap_dict.json", "r") as f:
+    flow_cap_dict = json.load(f)
+
+with open(base_path / "parameters" / "free_flow_speed_dict.json", "r") as f:
+    free_flow_speed_dict = json.load(f)
+
+with open(base_path / "parameters" / "min_speed_cap.json", "r") as f:
+    min_speed_cap = json.load(f)
+
 # OS open roads
 osoprd_link = gpd.read_parquet(base_path / "networks" / "osoprd_road_links.parquet")
 osoprd_node = gpd.read_parquet(base_path / "networks" / "osoprd_road_nodes.parquet")
 
-# links (458827, )
-# select major roads
-road_link_file = osoprd_link[
-    (osoprd_link.road_classification == "A Road")
-    | (osoprd_link.road_classification == "B Road")
-    | (osoprd_link.road_classification == "Motorway")
-]
-road_link_file.reset_index(drop=True, inplace=True)
-
-# %%
-# input2: urban mask
-# apply urban mask
-urban_mask = gpd.read_parquet(base_path / "networks" / "urban_mask.parquet")
-road_link_file = road_link_file.sjoin(urban_mask, how="left")
-road_link_file["urban"] = road_link_file["index_right"].apply(
-    lambda x: 0 if pd.isna(x) else 1
+# ETISPLUS roads
+etisplus_road_links = gpd.read_parquet(
+    base_path / "networks" / "road" / "etisplus_road_links.geoparquet"
 )
-road_link_file = road_link_file.drop(columns=["index_right", "FID_1"])
+etisplus_urban_roads = etisplus_road_links[["Urban"]]
+etisplus_urban_roads = etisplus_urban_roads[etisplus_urban_roads["Urban"] == 1]
 
-road_link_file["e_id"] = road_link_file.id
-road_link_file["from_id"] = road_link_file.start_node
-road_link_file["to_id"] = road_link_file.end_node
-
-# nodes (423649, )
-sel_node_idx = list(
-    set(
-        list(road_link_file.start_node.tolist())
-        + list(road_link_file.end_node.tolist())
-    )
-)
-road_node_file = osoprd_node[osoprd_node.id.isin(sel_node_idx)]
-road_node_file.reset_index(drop=True, inplace=True)
-
-road_node_file["nd_id"] = road_node_file.id
-road_node_file["lat"] = road_node_file.geometry.y
-road_node_file["lon"] = road_node_file.geometry.x
-
-# %%
-# input3: centroids of admins
+# population-weighted centroids
 zone_centroids = gpd.read_parquet(base_path / "census_datasets" / "zone_pwc.parquet")
+
+# O-D matrix (2011)
+# original O-D (cross-border trips, by cars, 2011)
+# Area of usual residence:
+# OA (2011)
+# Area of workplace:
+# Workplace Zone (ENW, 2011),
+# MOSA (ENW, 2011)
+# Intermediate Zones (Scotland, 2001)
+# OA (Scotland, 2011)
+od_df = pd.read_csv(base_path / "census_datasets" / "od_gb_2011.csv")
+print(f"total flows: {od_df.car.sum()}")  # 14_203_635 trips/day
+
+# %%
+# select major roads
+road_link_file, road_node_file = func.select_partial_roads(
+    osoprd_link,
+    osoprd_node,
+    col_name="road_classification",
+    list_of_values=["A Road", "B Road", "Motorway"],
+)
+
+# classify the selected major road links into urban/suburban
+urban_mask = func.create_urban_mask(etisplus_urban_roads)
+road_link_file = func.label_urban_roads(road_link_file, urban_mask)
 
 # Find the nearest road node for each zone
 nearest_node_dict = {}  # node_idx: zone_idx
@@ -223,22 +104,7 @@ for zone_idx in range(zone_centroids.shape[0]):
     zone_to_node[zonei] = nodei
 
 # %%
-# input4: O-D matrix
-# original O-D (cross-border trips, by cars, 2011)
-# Area of usual residence:
-# OA (2011)
-# Area of workplace:
-# Workplace Zone (ENW, 2011),
-# MOSA (ENW, 2011)
-# Intermediate Zones (Scotland, 2001)
-# OA (Scotland, 2011)
-od_df = pd.read_csv(base_path / "census_datasets" / "od_gb_2011.csv")
-print(f"total flows: {od_df.car.sum()}")  # 14_203_635 trips/day
-
-from_zone_label = "Area of usual residence"
-to_zone_label = "Area of workplace"
-
-# nearest nodes <- O-D information
+# attach od info of each zone to their nearest road network nodes
 list_of_origin_node = []
 destination_node_dict: dict[str, list[str]] = defaultdict(list)
 flow_dict: dict[str, list[float]] = defaultdict(list)
@@ -246,8 +112,8 @@ flow_dict: dict[str, list[float]] = defaultdict(list)
 invalid_home = []
 invalid_work = []
 for idx in tqdm(range(od_df.shape[0]), desc="Processing"):  # 11311607 zones
-    from_zone = od_df.loc[idx, from_zone_label]
-    to_zone = od_df.loc[idx, to_zone_label]
+    from_zone = od_df.loc[idx, "Area of usual residence"]
+    to_zone = od_df.loc[idx, "Area of workplace"]
     count: float = od_df.loc[idx, "car"]  # type: ignore
     try:
         from_node = zone_to_node[from_zone]
@@ -265,7 +131,6 @@ for idx in tqdm(range(od_df.shape[0]), desc="Processing"):  # 11311607 zones
     destination_node_dict[from_node].append(to_node)  # destinations
     flow_dict[from_node].append(count)  # flows
 
-# %%
 list_of_origin_node = list(set(list_of_origin_node))  # 124740 nodes
 list_of_origin_node.sort()
 
@@ -307,19 +172,19 @@ edgeList = [
     for _, sourcei, targeti, _, _, _, _ in edge_weight_dict
 ]
 lengthList = [
-    lengthi * CONV_METER_TO_MILE for _, _, _, lengthi, _, _, _ in edge_weight_dict
+    lengthi * cons.CONV_METER_TO_MILE for _, _, _, lengthi, _, _, _ in edge_weight_dict
 ]  # convert meter to mile
 typeList = [typei[0] for _, _, _, _, typei, _, _ in edge_weight_dict]  # M, A, B
 formList = [formi for _, _, _, _, _, _, formi in edge_weight_dict]
-speedList = np.vectorize(initial_speed_func)(
+speedList = np.vectorize(func.initial_speed_func)(
     typeList, formList
 )  # initial speed: free-flow speed
 # traveling time
 timeList = np.array(lengthList) / np.array(speedList)  # hours
 # def voc_func(speed):  # speed: mile/hour
-vocList = np.vectorize(voc_func)(speedList)
+vocList = np.vectorize(func.voc_func)(speedList)
 # def cost_func(time, distance, voc):  # time: hour, distance: mile, voc: pound/km
-timeList2 = np.vectorize(cost_func)(timeList, lengthList, vocList)  # hours
+timeList2 = np.vectorize(func.cost_func)(timeList, lengthList, vocList)  # hours
 # weight: time + f(cost)
 weightList = ((timeList + timeList2) * 3600).tolist()  # seconds
 
@@ -347,7 +212,9 @@ form_dict = road_link_file.set_index("e_id")["form_of_way"]
 # urban form of road (binary)
 isurban_dict = road_link_file.set_index("e_id")["urban"]
 # length dict (miles)
-length_dict = road_link_file.set_index("e_id")["geometry"].length * CONV_METER_TO_MILE
+length_dict = (
+    road_link_file.set_index("e_id")["geometry"].length * cons.CONV_METER_TO_MILE
+)
 # M, A_dual, A_single, B
 road_link_file["combined_label"] = road_link_file.road_type_label
 road_link_file.loc[road_link_file.road_type_label == "A", "combined_label"] = "A_dual"
@@ -459,7 +326,7 @@ while total_remain > 0:  # iter_flag:
         temp_edge_flow["total_flow"] = (
             temp_edge_flow.flow + temp_edge_flow.temp_acc_flow
         )
-        temp_edge_flow["speed"] = np.vectorize(speed_flow_func)(
+        temp_edge_flow["speed"] = np.vectorize(func.speed_flow_func)(
             temp_edge_flow.road_type,
             temp_edge_flow.form_of_way,
             temp_edge_flow.isurban,
@@ -500,13 +367,13 @@ while total_remain > 0:  # iter_flag:
     )
     r = temp_edge_flow.r.min()  # r: (0,1)
     if r < 0:
-        print("Error: r should not be negative!")
+        print("Error: negative r!")
         break
     if r == 0:  # temp_acc_capacity = 0
-        print("Error: existing network has zero-capacity links!")
+        print("Error: (r==0) existing network has zero-capacity links!")
         break
     if r >= 1:
-        print("Error: r > 0: there is no edge flow!")
+        print("Error: (r>=1) there is no edge overflow!")
         break
     print(f"r = {r}")  # set as NaN when flow is zero
 
@@ -526,7 +393,7 @@ while total_remain > 0:  # iter_flag:
     )  # total flow = accumulated flow of previous steps + adjusted flow of current step
 
     # calculate the average flow rate
-    temp_edge_flow["speed"] = np.vectorize(speed_flow_func)(
+    temp_edge_flow["speed"] = np.vectorize(func.speed_flow_func)(
         temp_edge_flow.road_type,
         temp_edge_flow.form_of_way,
         temp_edge_flow.isurban,
@@ -560,7 +427,7 @@ while total_remain > 0:  # iter_flag:
     # od matrix: remaining flow of each origin
     # flow_dict[origin_i] = [flow1, flow2,..., flowj, ... flowJ]
     flow_dict = {
-        k: filter_less_than_one(np.array(v) * (1 - r)).tolist()
+        k: func.filter_less_than_one(np.array(v) * (1 - r)).tolist()
         for k, v in flow_dict.items()
     }
 
@@ -600,8 +467,8 @@ while total_remain > 0:  # iter_flag:
         # lanes where the average flow speed decreased to zero
         break
     else:
-        vocList = np.vectorize(voc_func)(speedList)
-        timeList2 = np.vectorize(cost_func)(timeList, lengthList, vocList)  # hours
+        vocList = np.vectorize(func.voc_func)(speedList)
+        timeList2 = np.vectorize(func.cost_func)(timeList, lengthList, vocList)  # hours
         weightList = ((timeList + timeList2) * 3600).tolist()  # seconds
         test_net_ig.es["weight"] = weightList
         # update idx_to_name dict
