@@ -5,12 +5,13 @@ import numpy as np
 import pandas as pd
 import geopandas as gpd  # type: ignore
 
-from collections import defaultdict
-import igraph  # type: ignore
+# from collections import defaultdict
+# import igraph  # type: ignore
 from tqdm.auto import tqdm
 
 from utils import load_config, get_flow_on_edges
-import constants as cons
+
+# import constants as cons
 import functions as func
 
 import json
@@ -36,7 +37,7 @@ with open(base_path / "parameters" / "flow_breakpoint_dict.json", "r") as f:
     flow_breakpoint_dict = json.load(f)
 
 with open(base_path / "parameters" / "flow_cap_dict.json", "r") as f:
-    flow_cap_dict = json.load(f)
+    flow_capacity_dict = json.load(f)
 
 with open(base_path / "parameters" / "free_flow_speed_dict.json", "r") as f:
     free_flow_speed_dict = json.load(f)
@@ -44,37 +45,46 @@ with open(base_path / "parameters" / "free_flow_speed_dict.json", "r") as f:
 with open(base_path / "parameters" / "min_speed_cap.json", "r") as f:
     min_speed_cap = json.load(f)
 
+with open(base_path / "parameters" / "urban_speed_cap.json", "r") as f:
+    urban_speed_cap = json.load(f)
+
 # OS open roads
-osoprd_link = gpd.read_parquet(base_path / "networks" / "osoprd_road_links.parquet")
-osoprd_node = gpd.read_parquet(base_path / "networks" / "osoprd_road_nodes.parquet")
+osoprd_link = gpd.read_parquet(
+    base_path / "networks" / "road" / "osoprd_road_links.geoparquet"
+)
+osoprd_node = gpd.read_parquet(
+    base_path / "networks" / "road" / "osoprd_road_nodes.geoparquet"
+)
 
 # ETISPLUS roads
 etisplus_road_links = gpd.read_parquet(
     base_path / "networks" / "road" / "etisplus_road_links.geoparquet"
 )
-etisplus_urban_roads = etisplus_road_links[["Urban"]]
+etisplus_urban_roads = etisplus_road_links[["Urban", "geometry"]]
 etisplus_urban_roads = etisplus_urban_roads[etisplus_urban_roads["Urban"] == 1]
 
-# population-weighted centroids
-zone_centroids = gpd.read_parquet(base_path / "census_datasets" / "zone_pwc.parquet")
+# population-weighted centroids (combined spatial units)
+zone_centroids = gpd.read_parquet(
+    base_path / "census_datasets" / "admin_pwc" / "zone_pwc.geoparquet"
+)
 
 # O-D matrix (2011)
 # original O-D (cross-border trips, by cars, 2011)
 # Area of usual residence:
-# OA (2011)
+# OA (Scotland, 2011) & OA (ENW, 2011)
 # Area of workplace:
 # Workplace Zone (ENW, 2011),
 # MOSA (ENW, 2011)
 # Intermediate Zones (Scotland, 2001)
 # OA (Scotland, 2011)
-od_df = pd.read_csv(base_path / "census_datasets" / "od_gb_2011.csv")
+od_df = pd.read_csv(base_path / "census_datasets" / "od_matrix" / "od_gb_2011.csv")
 print(f"total flows: {od_df.car.sum()}")  # 14_203_635 trips/day
 
 # %%
 # select major roads
 road_link_file, road_node_file = func.select_partial_roads(
-    osoprd_link,
-    osoprd_node,
+    road_links=osoprd_link,
+    road_nodes=osoprd_node,
     col_name="road_classification",
     list_of_values=["A Road", "B Road", "Motorway"],
 )
@@ -83,161 +93,51 @@ road_link_file, road_node_file = func.select_partial_roads(
 urban_mask = func.create_urban_mask(etisplus_urban_roads)
 road_link_file = func.label_urban_roads(road_link_file, urban_mask)
 
-# Find the nearest road node for each zone
-nearest_node_dict = {}  # node_idx: zone_idx
-for zone_idx, centroid_i in zone_centroids.iterrows():
-    closest_road_node = road_node_file.sindex.nearest(
-        centroid_i.geometry, return_all=False
-    )[1][0]
-    # for the first [x]:
-    #   [0] represents the index of geometry;
-    #   [1] represents the index of gdf
-    # the second [x] represents the No. of closest item in the returned list,
-    #   which only return one nearest node in this case
-    nearest_node_dict[zone_idx] = closest_road_node
+# find the nearest road node for each zone
+zone_to_node = func.find_nearest_node(zone_centroids, road_node_file)
 
-zone_to_node = {}
-for zone_idx in range(zone_centroids.shape[0]):
-    zonei = zone_centroids.loc[zone_idx, "code"]
-    node_idx = nearest_node_dict[zone_idx]
-    nodei = road_node_file.loc[node_idx, "nd_id"]
-    zone_to_node[zonei] = nodei
-
-# %%
 # attach od info of each zone to their nearest road network nodes
-list_of_origin_node = []
-destination_node_dict: dict[str, list[str]] = defaultdict(list)
-flow_dict: dict[str, list[float]] = defaultdict(list)
-
-invalid_home = []
-invalid_work = []
-for idx in tqdm(range(od_df.shape[0]), desc="Processing"):  # 11311607 zones
-    from_zone = od_df.loc[idx, "Area of usual residence"]
-    to_zone = od_df.loc[idx, "Area of workplace"]
-    count: float = od_df.loc[idx, "car"]  # type: ignore
-    try:
-        from_node = zone_to_node[from_zone]
-    except KeyError:
-        invalid_home.append(from_zone)
-        print(f"No accessible net nodes to home {from_zone}!")
-
-    try:
-        to_node = zone_to_node[to_zone]
-    except KeyError:
-        invalid_work.append(to_zone)
-        print(f"No accessible net nodes to workplace {to_zone}!")
-
-    list_of_origin_node.append(from_node)  # origin
-    destination_node_dict[from_node].append(to_node)  # destinations
-    flow_dict[from_node].append(count)  # flows
-
-list_of_origin_node = list(set(list_of_origin_node))  # 124740 nodes
+list_of_origin_node, destination_node_dict, flow_dict = func.od_interpret(
+    od_df,
+    zone_to_node,
+    col_origin="Area of usual residence",
+    col_destination="Area of workplace",
+    col_count="car",
+)
+# extract identical origin nodes
+list_of_origin_node = list(set(list_of_origin_node))
 list_of_origin_node.sort()
 
 # %%
-# network creation and configuration (igragh)
+# network creation (igragh)
 name_to_index = {name: index for index, name in enumerate(road_node_file.nd_id)}
 index_to_name = {value: key for key, value in name_to_index.items()}
-# nodes
-nodeList = [
-    (
-        name_to_index[road_node_file.loc[i, "id"]],
-        {
-            "lon": road_node_file.loc[i, "geometry"].x,
-            "lat": road_node_file.loc[i, "geometry"].y,
-        },
-    )
-    for i in range(road_node_file.shape[0])
-]
-# edges
-edge_weight_dict = [
-    (
-        road_link_file.loc[i, "e_id"],  # edge name
-        road_link_file.loc[i, "from_id"],
-        road_link_file.loc[i, "to_id"],
-        road_link_file.loc[i, "geometry"].length,  # meter
-        road_link_file.loc[i, "road_classification"],  # [M, A, B]
-        road_link_file.loc[i, "urban"],  # urban/suburban
-        road_link_file.loc[i, "form_of_way"],  # [dual, single...]
-    )
-    for i in range(road_link_file.shape[0])
-]
-
-edgeNameList = [
-    e_namei
-    for e_namei, sourcei, targeti, lengthi, typei, urbani, formi in edge_weight_dict
-]
-edgeList = [
-    (name_to_index[sourcei], name_to_index[targeti])
-    for _, sourcei, targeti, _, _, _, _ in edge_weight_dict
-]
-lengthList = [
-    lengthi * cons.CONV_METER_TO_MILE for _, _, _, lengthi, _, _, _ in edge_weight_dict
-]  # convert meter to mile
-typeList = [typei[0] for _, _, _, _, typei, _, _ in edge_weight_dict]  # M, A, B
-formList = [formi for _, _, _, _, _, _, formi in edge_weight_dict]
-speedList = np.vectorize(func.initial_speed_func)(
-    typeList, formList
-)  # initial speed: free-flow speed
-# traveling time
-timeList = np.array(lengthList) / np.array(speedList)  # hours
-# def voc_func(speed):  # speed: mile/hour
-vocList = np.vectorize(func.voc_func)(speedList)
-# def cost_func(time, distance, voc):  # time: hour, distance: mile, voc: pound/km
-timeList2 = np.vectorize(func.cost_func)(timeList, lengthList, vocList)  # hours
-# weight: time + f(cost)
-weightList = ((timeList + timeList2) * 3600).tolist()  # seconds
-
-# %%
-# create the network
-test_net_ig = igraph.Graph(directed=False)
-test_net_ig.add_vertices(nodeList)
-test_net_ig.vs["nd_id"] = road_node_file.id.tolist()
-test_net_ig.add_edges(edgeList)
-test_net_ig.es["edge_name"] = edgeNameList
-test_net_ig.es["weight"] = weightList
-
+test_net_ig = func.create_igraph_network(
+    name_to_index,
+    road_link_file,
+)
 # edge_idx -> edge_name
 edge_index_to_name = {idx: name for idx, name in enumerate(test_net_ig.es["edge_name"])}
 
-# %%
-# initailisation
-# road type
-road_link_file["road_type_label"] = road_link_file.road_classification.str[0]
-road_type_dict = road_link_file.set_index("e_id")[
-    "road_type_label"
-]  # dict: e_id -> ABM
-# form of road dict [dual, single, ...]
-form_dict = road_link_file.set_index("e_id")["form_of_way"]
-# urban form of road (binary)
-isurban_dict = road_link_file.set_index("e_id")["urban"]
-# length dict (miles)
-length_dict = (
-    road_link_file.set_index("e_id")["geometry"].length * cons.CONV_METER_TO_MILE
+# network initailisation
+(
+    road_link_file,
+    road_type_dict,
+    form_dict,
+    isurban_dict,
+    length_dict,
+    acc_flow_dict,
+    acc_capacity_dict,
+    speed_dict,
+) = func.initialise_igraph_network(
+    road_link_file,
+    flow_capacity_dict,
+    free_flow_speed_dict,
+    "e_id",
+    "road_classification",
+    "form_of_way",
+    "urban",
 )
-# M, A_dual, A_single, B
-road_link_file["combined_label"] = road_link_file.road_type_label
-road_link_file.loc[road_link_file.road_type_label == "A", "combined_label"] = "A_dual"
-road_link_file.loc[
-    (
-        (road_link_file.road_type_label == "A")
-        & (road_link_file.form_of_way.str.contains("Single"))
-    ),
-    "combined_label",
-] = "A_single"  # only single carriageways of A roads
-
-
-# accumulated flow dict (cars/day)
-road_link_file["acc_flow"] = 0.0
-acc_flow_dict = road_link_file.set_index("e_id")["acc_flow"]
-# accumulated capacity dict (cars/day)
-road_link_file["acc_capacity"] = road_link_file.combined_label.map(flow_cap_dict)
-acc_capacity_dict = road_link_file.set_index("e_id")["acc_capacity"]
-# accumulated average flow rate dict (miles/hour)
-road_link_file["ave_flow_rate"] = road_link_file.combined_label.map(
-    free_flow_speed_dict
-)  # initial: free-flow speed
-speed_dict = road_link_file.set_index("e_id")["ave_flow_rate"]
 
 # %%
 # flow simulation
