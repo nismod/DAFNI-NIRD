@@ -1,5 +1,6 @@
 # %%
 from typing import Union, Tuple
+from collections import defaultdict
 
 import numpy as np
 import pandas as pd
@@ -7,8 +8,8 @@ import geopandas as gpd  # type: ignore
 
 import igraph  # type: ignore
 
-from collections import defaultdict
 import constants as cons
+from utils import get_flow_on_edges
 
 from tqdm.auto import tqdm
 import warnings
@@ -364,3 +365,312 @@ def initialise_igraph_network(
         acc_capacity_dict,
         acc_speed_dict,
     )
+
+
+def update_od_matrix(
+    temp_flow_matrix: pd.DataFrame,
+    supply_dict: dict,
+    destination_dict: dict,
+) -> Tuple[list, dict, dict, float]:
+    # drop the origin-destination pairs ("path = []")
+    temp_df = temp_flow_matrix[temp_flow_matrix["path"].apply(lambda x: len(x) == 0)]
+    non_allocated_flow = temp_df.flow.sum()
+    print(f"Non_allocated_flow: {non_allocated_flow}")
+
+    for _, row in temp_df.iterrows():
+        origin_temp = row["origin"]
+        destination_temp = row["destination"]
+        idx_temp = destination_dict[origin_temp].index(destination_temp)
+        destination_dict[origin_temp].remove(destination_temp)
+        del supply_dict[origin_temp][idx_temp]
+
+    # drop origins with zero supply
+    new_supply_dict = {}
+    new_destination_dict = {}
+    new_list_of_origins = {}
+    for origin, list_of_counts in supply_dict.items():
+        tt_supply = sum(list_of_counts)
+        if tt_supply > 0:
+            new_list_of_origins.append(origin)
+            new_counts = [od_flow for od_flow in list_of_counts if od_flow != 0]
+            new_supply_dict[origin] = new_counts
+            new_destination_dict[origin] = [
+                dest
+                for idx, dest in enumerate(destination_dict[origin])
+                if list_of_counts[idx] != 0
+            ]
+
+    return (
+        new_list_of_origins,
+        new_supply_dict,
+        new_destination_dict,
+        non_allocated_flow,
+    )
+
+
+def update_network_structure(
+    network: igraph.Graph,
+    length_dict: dict,
+    speed_dict: dict,
+    temp_edge_flow: pd.DataFrame,
+) -> Tuple[igraph.Graph, dict]:
+    zero_capacity_edges = set(
+        temp_edge_flow.loc[temp_edge_flow["remaining_capacity"] < 1, "e_id"].tolist()
+    )
+    net_edges = network.es["edge_name"]
+    idx_to_remove = [
+        idx for idx, element in enumerate(net_edges) if element in zero_capacity_edges
+    ]
+
+    # drop links that have reached their full capacities
+    network.delete_edges(idx_to_remove)
+    number_of_edges = len(list(network.es))
+    print(f"The remaining number of edges in the network: {number_of_edges}")
+
+    # update edge weights (time: seconds)
+    remaining_edges = network.es["edge_name"]
+    lengthList = list(
+        map(length_dict.get, filter(length_dict.__contains__, remaining_edges))
+    )
+    speedList = list(
+        map(speed_dict.get, filter(speed_dict.__contains__, remaining_edges))
+    )
+    timeList = np.where(
+        np.array(speedList) != 0, np.array(lengthList) / np.array(speedList), np.nan
+    )  # hours
+
+    if np.isnan(timeList).any():
+        print("ERROR: Network contains congested edges.")
+        exit()
+    else:
+        vocList = np.vectorize(voc_func)(speedList)
+        timeList2 = np.vectorize(cost_func)(timeList, lengthList, vocList)  # hours
+        weightList = (timeList2 * 3600).tolist()  # seconds
+        network.es["weight"] = weightList
+
+        # update idx_to_name dict
+        edge_index_to_name = {
+            idx: name for idx, name in enumerate(network.es["edge_name"])
+        }
+    return network, edge_index_to_name
+
+
+def network_flow_model(
+    network: igraph.Graph,
+    list_of_origins: list,
+    supply_dict: dict,
+    destination_dict: dict,
+    node_name_to_index: dict,
+    edge_index_to_name: dict,
+    edge_type_dict: dict,
+    edge_form_dict: dict,
+    edge_isUrban_dict: dict,
+    edge_length_dict: dict,
+    acc_flow_dict: dict,
+    acc_capacity_dict: dict,
+    acc_speed_dict: dict,
+    col_edge_id: str,
+) -> Tuple[dict, dict, dict]:
+    total_remain = sum(sum(values) for values in supply_dict)
+    print(f"The initial total supply is {total_remain}")
+    number_of_edges = len(list(network.es))
+    print(f"The initial number of edges in the network: {number_of_edges}")
+    print(f"The initial number of origins: {len(list_of_origins)}")
+    number_of_destinations = sum(len(value) for value in destination_dict.values())
+    print(f"The initial number of destinations: {number_of_destinations}")
+
+    total_non_allocated_flow = 0
+    iter_flag = 1
+    total_non_allocated_flow = 0
+    while total_remain > 0:
+        print(f"No.{iter_flag} iteration starts:")
+        list_of_spath = []
+        # find the shortest path for each origin-destination pair
+        for i in tqdm(range(len(list_of_origins)), desc="Processing"):
+            name_of_origin_node = list_of_origins[i]
+            idx_of_origin_node = node_name_to_index[name_of_origin_node]
+            list_of_name_destination_node = destination_dict[
+                name_of_origin_node
+            ]  # a list of destination nodes
+            list_of_idx_destination_node = [
+                node_name_to_index[i] for i in list_of_name_destination_node
+            ]
+            flows = supply_dict[name_of_origin_node]
+            paths = network.get_shortest_paths(
+                v=idx_of_origin_node,
+                to=list_of_idx_destination_node,
+                weights="weight",
+                mode="out",
+                output="epath",
+            )
+            # [origin, destination list, path list, flow list]
+            list_of_spath.append(
+                [name_of_origin_node, list_of_name_destination_node, paths, flows]
+            )
+
+        # calculate edge flows
+        temp_flow_matrix = pd.DataFrame(
+            list_of_spath,
+            columns=[
+                "origin",
+                "destination",
+                "path",
+                "flow",
+            ],
+        ).explode(["destination", "path", "flow"])
+        temp_edge_flow = get_flow_on_edges(
+            temp_flow_matrix, col_edge_id, "path", "flow"
+        )
+
+        # create a temporary table
+        temp_edge_flow[col_edge_id] = temp_edge_flow[col_edge_id].map(
+            edge_index_to_name
+        )  # edge name
+        temp_edge_flow["road_type"] = temp_edge_flow[col_edge_id].map(
+            edge_type_dict
+        )  # road type
+        temp_edge_flow["form_of_way"] = temp_edge_flow[col_edge_id].map(
+            edge_form_dict
+        )  # road form
+        temp_edge_flow["isUrban"] = temp_edge_flow[col_edge_id].map(
+            edge_isUrban_dict
+        )  # urban/suburban
+        temp_edge_flow["temp_acc_flow"] = temp_edge_flow[col_edge_id].map(
+            acc_flow_dict
+        )  # flow
+        temp_edge_flow["temp_acc_capacity"] = temp_edge_flow[col_edge_id].map(
+            acc_capacity_dict
+        )  # capacity
+        temp_edge_flow["est_overflow"] = (
+            temp_edge_flow["flow"] - temp_edge_flow["temp_acc_capacity"]
+        )  # estimated overflow: positive -> has overflow
+
+        max_overflow = temp_edge_flow["est_overflow"].max()
+        print(f"The maximum amount of overflow of edges: {max_overflow}")
+
+        # break
+        if max_overflow <= 0:
+            temp_edge_flow["total_flow"] = (
+                temp_edge_flow["flow"] + temp_edge_flow["temp_acc_flow"]
+            )
+            temp_edge_flow["speed"] = np.vectorize(speed_flow_func)(
+                temp_edge_flow["road_type"],
+                temp_edge_flow["form_of_way"],
+                temp_edge_flow["isUrban"],
+                temp_edge_flow["total_flow"],
+            )
+            temp_edge_flow["remaining_capacity"] = (
+                temp_edge_flow["temp_acc_capacity"] - temp_edge_flow["flow"]
+            )
+            # update dicts
+            # accumulated edge flows
+            temp_dict = temp_edge_flow.set_index(col_edge_id)["total_flow"]
+            acc_flow_dict.update(
+                {key: temp_dict[key] for key in acc_flow_dict.keys() & temp_dict.keys()}
+            )
+            # average flow rate
+            temp_dict = temp_edge_flow.set_index(col_edge_id)["speed"]
+            acc_speed_dict.update(
+                {
+                    key: temp_dict[key]
+                    for key in acc_speed_dict.keys() & temp_dict.keys()
+                }
+            )
+            # accumulated remaining capacities
+            temp_dict = temp_edge_flow.set_index(col_edge_id)["remaining_capacity"]
+            acc_capacity_dict.update(
+                {
+                    key: temp_dict[key]
+                    for key in acc_capacity_dict.keys() & temp_dict.keys()
+                }
+            )
+            print("Iteration stops: there is no edge overflow.")
+            break
+
+        # calculate the ratio of flow adjustment (0 < r < 1)
+        temp_edge_flow["r"] = np.where(
+            temp_edge_flow["flow"] != 0,
+            temp_edge_flow["temp_acc_capacity"] / temp_edge_flow["flow"],
+            np.nan,
+        )
+        r = temp_edge_flow.r.min()
+        if r < 0:
+            print("Error: negative r!")
+            break
+        if r == 0:  # temp_acc_capacity = 0
+            print("Error: (r==0) existing network has zero-capacity links!")
+            break
+        if r >= 1:
+            print("Error: (r>=1) there is no edge overflow!")
+            break
+        print(f"r = {r}")  # set as NaN when flow is zero
+
+        # update flow matrix
+        temp_flow_matrix = temp_flow_matrix[
+            temp_flow_matrix["path"].apply(lambda x: len(x) != 0)
+        ]
+        temp_flow_matrix["flow"] = temp_flow_matrix["flow"] * r
+
+        # update edge flows
+        temp_edge_flow["adjusted_flow"] = temp_edge_flow["flow"] * r
+        temp_edge_flow["total_flow"] = (
+            temp_edge_flow.temp_acc_flow + temp_edge_flow.adjusted_flow
+        )
+        temp_edge_flow["speed"] = np.vectorize(speed_flow_func)(
+            temp_edge_flow.road_type,
+            temp_edge_flow.form_of_way,
+            temp_edge_flow.isurban,
+            temp_edge_flow.total_flow,
+        )
+        temp_edge_flow["remaining_capacity"] = (
+            temp_edge_flow.temp_acc_capacity - temp_edge_flow.adjusted_flow
+        )
+        temp_edge_flow.loc[
+            temp_edge_flow.remaining_capacity < 0, "remaining_capacity"
+        ] = 0.0  # capacity is non-negative
+
+        # update dicts
+        # accumulated flows
+        temp_dict = temp_edge_flow.set_index(col_edge_id)["total_flow"]
+        acc_flow_dict.update(
+            {key: temp_dict[key] for key in acc_flow_dict.keys() & temp_dict.keys()}
+        )
+        # average flow rate
+        temp_dict = temp_edge_flow.set_index(col_edge_id)["speed"]
+        acc_speed_dict.update(
+            {key: temp_dict[key] for key in acc_speed_dict.keys() & temp_dict.keys()}
+        )
+        # accumulated remaining capacities
+        temp_dict = temp_edge_flow.set_index(col_edge_id)["remaining_capacity"]
+        acc_capacity_dict.update(
+            {key: temp_dict[key] for key in acc_capacity_dict.keys() & temp_dict.keys()}
+        )
+
+        # if remaining supply < 1 -> 0
+        supply_dict = {
+            k: filter_less_than_one(np.array(v) * (1 - r)).tolist()
+            for k, v in supply_dict.items()
+        }
+        total_remain = sum(sum(values) for values in supply_dict.values())
+        print(f"The total remaining supply is: {total_remain}")
+
+        # update od matrix
+        list_of_origins, supply_dict, destination_dict, non_allocated_flow = (
+            update_od_matrix(temp_flow_matrix, supply_dict, destination_dict)
+        )
+
+        total_non_allocated_flow += non_allocated_flow  # record the overall flow loss
+        number_of_destinations = sum(len(value) for value in destination_dict.values())
+        print(f"The remaining number of origins: {len(list_of_origins)}")
+        print(f"The remaining number of destinations: {number_of_destinations}")
+
+        # update network structure (nodes and edges)
+        network, edge_index_to_name = update_network_structure(
+            network, edge_length_dict, acc_speed_dict, temp_edge_flow
+        )
+
+        iter_flag += 1
+
+    print("The flow simulation is completed!")
+    print(f"The total non-allocated flow is {total_non_allocated_flow}")
+    return acc_speed_dict, acc_flow_dict, acc_capacity_dict
