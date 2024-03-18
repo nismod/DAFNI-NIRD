@@ -259,7 +259,10 @@ def od_interpret(
 
 # network creation
 def create_igraph_network(
-    name_to_index: dict, road_links: gpd.GeoDataFrame, road_nodes: gpd.GeoDataFrame
+    name_to_index: dict,
+    road_links: gpd.GeoDataFrame,
+    road_nodes: gpd.GeoDataFrame,
+    initialSpeeds: dict,
 ) -> igraph.Graph:
     nodeList = [
         (
@@ -282,7 +285,7 @@ def create_igraph_network(
         edge_from = link.from_id
         edge_to = link.to_id
         edge_length = link.geometry.length * cons.CONV_METER_TO_MILE  # miles
-        edge_type = link.road_classification
+        edge_type = link.road_classification[0]
         edge_form = link.form_of_way
         edgeNameList.append(edge_name)
         edgeList.append((name_to_index[edge_from], name_to_index[edge_to]))
@@ -291,7 +294,9 @@ def create_igraph_network(
         edgeFormList.append(edge_form)
 
     edgeSpeedList = np.vectorize(initial_speed_func)(
-        edgeTypeList, edgeFormList
+        edgeTypeList,
+        edgeFormList,
+        initialSpeeds,
     )  # miles/hour
 
     # travel time
