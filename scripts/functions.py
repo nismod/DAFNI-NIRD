@@ -1,7 +1,7 @@
 # %%
 from typing import Union, Tuple
 from collections import defaultdict
-
+from functools import partial
 import numpy as np
 import pandas as pd
 import geopandas as gpd  # type: ignore
@@ -122,7 +122,6 @@ def initial_speed_func(
 
 def speed_flow_func(
     road_type: str,
-    form_of_road: str,
     isurban: int,
     vp: float,
     free_flow_speed_dict: dict,
@@ -147,39 +146,38 @@ def speed_flow_func(
                 return min(urban_speed_cap["M"], initial_speed)
             else:
                 return initial_speed
-    elif road_type == "A":
-        if form_of_road == "Single Carriageway":
-            initial_speed = free_flow_speed_dict["A_single"]
-            if vp > flow_breakpoint_dict["A_single"]:
-                vt = max(
-                    (initial_speed - 0.05 * (vp - flow_breakpoint_dict["A_single"])),
-                    min_speed_cap["A_single"],
-                )
-                if isurban:
-                    return min(urban_speed_cap["A_single"], vt)
-                else:
-                    return vt
+    elif road_type == "A_single":  # A_single/A_dual
+        initial_speed = free_flow_speed_dict["A_single"]
+        if vp > flow_breakpoint_dict["A_single"]:
+            vt = max(
+                (initial_speed - 0.05 * (vp - flow_breakpoint_dict["A_single"])),
+                min_speed_cap["A_single"],
+            )
+            if isurban:
+                return min(urban_speed_cap["A_single"], vt)
             else:
-                if isurban:
-                    return min(urban_speed_cap["A_single"], initial_speed)
-                else:
-                    return initial_speed
+                return vt
         else:
-            initial_speed = free_flow_speed_dict["A_dual"]
-            if vp > flow_breakpoint_dict["A_dual"]:
-                vt = max(
-                    (initial_speed - 0.033 * (vp - flow_breakpoint_dict["A_dual"])),
-                    min_speed_cap["A_dual"],
-                )
-                if isurban:
-                    return min(urban_speed_cap["A_dual"], vt)
-                else:
-                    return vt
+            if isurban:
+                return min(urban_speed_cap["A_single"], initial_speed)
             else:
-                if isurban:
-                    return min(urban_speed_cap["A_dual"], initial_speed)
-                else:
-                    return initial_speed
+                return initial_speed
+    elif road_type == "A_dual":
+        initial_speed = free_flow_speed_dict["A_dual"]
+        if vp > flow_breakpoint_dict["A_dual"]:
+            vt = max(
+                (initial_speed - 0.033 * (vp - flow_breakpoint_dict["A_dual"])),
+                min_speed_cap["A_dual"],
+            )
+            if isurban:
+                return min(urban_speed_cap["A_dual"], vt)
+            else:
+                return vt
+        else:
+            if isurban:
+                return min(urban_speed_cap["A_dual"], initial_speed)
+            else:
+                return initial_speed
     elif road_type == "B":
         initial_speed = free_flow_speed_dict["B"]
         if isurban:
@@ -318,27 +316,16 @@ def create_igraph_network(
 
 
 # network initialization
-# road type
 def initialise_igraph_network(
     road_links: gpd.GeoDataFrame,
     initial_capacity_dict: dict,
     initial_speed_dict: dict,
-    col_id: str,
-    col_rdclass: str,
-    col_form: str,
-    col_urban: str,
-) -> Tuple[gpd.GeoDataFrame, dict, dict, dict, dict, dict, dict, dict]:
+    col_road_classification=str,
+) -> gpd.GeoDataFrame:
     # road_types: M, A, B
-    road_links["road_type_label"] = road_links[col_rdclass].str[0]
-    edge_type_dict = road_links.set_index(col_id)["road_type_label"]
-    edge_form_dict = road_links.set_index(col_id)[col_form]
-    edge_isUrban_dict = road_links.set_index(col_id)[col_urban]
-    edge_length_dict = (
-        road_links.set_index(col_id)["geometry"].length * cons.CONV_METER_TO_MILE
-    )
-
-    # road_types and road_forms: M, A_dual, A_single, B
-    road_links["combined_label"] = road_links.road_type_label
+    road_links["road_type_label"] = road_links[col_road_classification].str[0]
+    # road_forms: M, A_dual, A_single, B
+    road_links["combined_label"] = road_links["road_type_label"]
     road_links.loc[road_links.road_type_label == "A", "combined_label"] = "A_dual"
     road_links.loc[
         (
@@ -347,29 +334,14 @@ def initialise_igraph_network(
         ),
         "combined_label",
     ] = "A_single"  # only single carriageways of A roads
-
     # accumulated edge flows (cars/day)
     road_links["acc_flow"] = 0.0
-    acc_flow_dict = road_links.set_index(col_id)["acc_flow"]
-
     # remaining edge capacities (cars/day)
-    road_links["acc_capacity"] = road_links.combined_label.map(initial_capacity_dict)
-    acc_capacity_dict = road_links.set_index(col_id)["acc_capacity"]
-
+    road_links["acc_capacity"] = road_links["combined_label"].map(initial_capacity_dict)
     # average edge flow rates (miles/hour)
     road_links["ave_flow_rate"] = road_links["combined_label"].map(initial_speed_dict)
-    acc_speed_dict = road_links.set_index(col_id)["ave_flow_rate"]
 
-    return (
-        road_links,
-        edge_type_dict,
-        edge_form_dict,
-        edge_isUrban_dict,
-        edge_length_dict,
-        acc_flow_dict,
-        acc_capacity_dict,
-        acc_speed_dict,
-    )
+    return road_links
 
 
 def update_od_matrix(
@@ -462,21 +434,28 @@ def update_network_structure(
 
 def network_flow_model(
     network: igraph.Graph,
+    road_links: gpd.GeoDataFrame,
+    node_name_to_index: dict,
+    edge_index_to_name: dict,
     list_of_origins: list,
     supply_dict: dict,
     destination_dict: dict,
-    node_name_to_index: dict,
-    edge_index_to_name: dict,
-    edge_type_dict: dict,
-    edge_form_dict: dict,
-    edge_isUrban_dict: dict,
-    edge_length_dict: dict,
-    acc_flow_dict: dict,
-    acc_capacity_dict: dict,
-    acc_speed_dict: dict,
-    col_edge_id: str,
+    free_flow_speed_dict: dict,
+    flow_breakpoint_dict: dict,
+    min_speed_cap: dict,
+    urban_speed_cap: dict,
+    col_eid: str,
 ) -> Tuple[dict, dict, dict]:
-    total_remain = sum(sum(values) for values in supply_dict)
+
+    partial_speed_flow_func = partial(
+        speed_flow_func,
+        free_flow_speed_dict=free_flow_speed_dict,
+        flow_breakpoint_dict=flow_breakpoint_dict,
+        min_speed_cap=min_speed_cap,
+        urban_speed_cap=urban_speed_cap,
+    )
+
+    total_remain = sum(sum(values) for values in supply_dict.values())
     print(f"The initial total supply is {total_remain}")
     number_of_edges = len(list(network.es))
     print(f"The initial number of edges in the network: {number_of_edges}")
@@ -484,7 +463,17 @@ def network_flow_model(
     number_of_destinations = sum(len(value) for value in destination_dict.values())
     print(f"The initial number of destinations: {number_of_destinations}")
 
-    total_non_allocated_flow = 0
+    # road link properties
+    edge_cbtype_dict = road_links.set_index(col_eid)["combined_label"].to_dict()
+    edge_isUrban_dict = road_links.set_index(col_eid)["urban"].to_dict()
+    edge_length_dict = (
+        road_links.set_index(col_eid)["geometry"].length * cons.CONV_METER_TO_MILE
+    ).to_dict()
+    acc_flow_dict = road_links.set_index(col_eid)["acc_flow"].to_dict()
+    acc_capacity_dict = road_links.set_index(col_eid)["acc_capacity"].to_dict()
+    acc_speed_dict = road_links.set_index(col_eid)["ave_flow_rate"].to_dict()
+
+    # starts
     iter_flag = 1
     total_non_allocated_flow = 0
     while total_remain > 0:
@@ -523,27 +512,22 @@ def network_flow_model(
                 "flow",
             ],
         ).explode(["destination", "path", "flow"])
-        temp_edge_flow = get_flow_on_edges(
-            temp_flow_matrix, col_edge_id, "path", "flow"
-        )
+        temp_edge_flow = get_flow_on_edges(temp_flow_matrix, col_eid, "path", "flow")
 
         # create a temporary table
-        temp_edge_flow[col_edge_id] = temp_edge_flow[col_edge_id].map(
+        temp_edge_flow[col_eid] = temp_edge_flow[col_eid].map(
             edge_index_to_name
         )  # edge name
-        temp_edge_flow["road_type"] = temp_edge_flow[col_edge_id].map(
-            edge_type_dict
-        )  # road type
-        temp_edge_flow["form_of_way"] = temp_edge_flow[col_edge_id].map(
-            edge_form_dict
-        )  # road form
-        temp_edge_flow["isUrban"] = temp_edge_flow[col_edge_id].map(
+
+        # road form -> combined type
+        temp_edge_flow["combined_label"] = temp_edge_flow[col_eid].map(edge_cbtype_dict)
+        temp_edge_flow["isUrban"] = temp_edge_flow[col_eid].map(
             edge_isUrban_dict
         )  # urban/suburban
-        temp_edge_flow["temp_acc_flow"] = temp_edge_flow[col_edge_id].map(
+        temp_edge_flow["temp_acc_flow"] = temp_edge_flow[col_eid].map(
             acc_flow_dict
         )  # flow
-        temp_edge_flow["temp_acc_capacity"] = temp_edge_flow[col_edge_id].map(
+        temp_edge_flow["temp_acc_capacity"] = temp_edge_flow[col_eid].map(
             acc_capacity_dict
         )  # capacity
         temp_edge_flow["est_overflow"] = (
@@ -558,9 +542,8 @@ def network_flow_model(
             temp_edge_flow["total_flow"] = (
                 temp_edge_flow["flow"] + temp_edge_flow["temp_acc_flow"]
             )
-            temp_edge_flow["speed"] = np.vectorize(speed_flow_func)(
-                temp_edge_flow["road_type"],
-                temp_edge_flow["form_of_way"],
+            temp_edge_flow["speed"] = np.vectorize(partial_speed_flow_func)(
+                temp_edge_flow["combined_label"],
                 temp_edge_flow["isUrban"],
                 temp_edge_flow["total_flow"],
             )
@@ -569,12 +552,12 @@ def network_flow_model(
             )
             # update dicts
             # accumulated edge flows
-            temp_dict = temp_edge_flow.set_index(col_edge_id)["total_flow"]
+            temp_dict = temp_edge_flow.set_index(col_eid)["total_flow"].to_dict()
             acc_flow_dict.update(
                 {key: temp_dict[key] for key in acc_flow_dict.keys() & temp_dict.keys()}
             )
             # average flow rate
-            temp_dict = temp_edge_flow.set_index(col_edge_id)["speed"]
+            temp_dict = temp_edge_flow.set_index(col_eid)["speed"].to_dict()
             acc_speed_dict.update(
                 {
                     key: temp_dict[key]
@@ -582,7 +565,9 @@ def network_flow_model(
                 }
             )
             # accumulated remaining capacities
-            temp_dict = temp_edge_flow.set_index(col_edge_id)["remaining_capacity"]
+            temp_dict = temp_edge_flow.set_index(col_eid)[
+                "remaining_capacity"
+            ].to_dict()
             acc_capacity_dict.update(
                 {
                     key: temp_dict[key]
@@ -621,9 +606,8 @@ def network_flow_model(
         temp_edge_flow["total_flow"] = (
             temp_edge_flow.temp_acc_flow + temp_edge_flow.adjusted_flow
         )
-        temp_edge_flow["speed"] = np.vectorize(speed_flow_func)(
-            temp_edge_flow.road_type,
-            temp_edge_flow.form_of_way,
+        temp_edge_flow["speed"] = np.vectorize(partial_speed_flow_func)(
+            temp_edge_flow.combined_label,
             temp_edge_flow.isurban,
             temp_edge_flow.total_flow,
         )
@@ -636,17 +620,17 @@ def network_flow_model(
 
         # update dicts
         # accumulated flows
-        temp_dict = temp_edge_flow.set_index(col_edge_id)["total_flow"]
+        temp_dict = temp_edge_flow.set_index(col_eid)["total_flow"].to_dict()
         acc_flow_dict.update(
             {key: temp_dict[key] for key in acc_flow_dict.keys() & temp_dict.keys()}
         )
         # average flow rate
-        temp_dict = temp_edge_flow.set_index(col_edge_id)["speed"]
+        temp_dict = temp_edge_flow.set_index(col_eid)["speed"].to_dict()
         acc_speed_dict.update(
             {key: temp_dict[key] for key in acc_speed_dict.keys() & temp_dict.keys()}
         )
         # accumulated remaining capacities
-        temp_dict = temp_edge_flow.set_index(col_edge_id)["remaining_capacity"]
+        temp_dict = temp_edge_flow.set_index(col_eid)["remaining_capacity"].to_dict()
         acc_capacity_dict.update(
             {key: temp_dict[key] for key in acc_capacity_dict.keys() & temp_dict.keys()}
         )

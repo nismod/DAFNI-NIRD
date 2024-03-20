@@ -23,8 +23,8 @@ list of inputs:
  - ETISPLUS_urban_roads: to create urban mask.
  - Population-weighed centroids of admin units.
  - O-D matrix (*travel to work by car).
-
 """
+
 # model parameters
 with open(base_path / "parameters" / "flow_breakpoint_dict.json", "r") as f:
     flow_breakpoint_dict = json.load(f)
@@ -62,14 +62,6 @@ zone_centroids = gpd.read_parquet(
 )
 
 # O-D matrix (2011)
-# original O-D (cross-border trips, by cars, 2011)
-# Area of usual residence:
-# OA (Scotland, 2011) & OA (ENW, 2011)
-# Area of workplace:
-# Workplace Zone (ENW, 2011),
-# MOSA (ENW, 2011)
-# Intermediate Zones (Scotland, 2001)
-# OA (Scotland, 2011)
 od_df = pd.read_csv(base_path / "census_datasets" / "od_matrix" / "od_gb_2011.csv")
 print(f"total flows: {od_df.car.sum()}")  # 14_203_635 trips/day
 
@@ -90,64 +82,51 @@ road_link_file = func.label_urban_roads(road_link_file, urban_mask)
 zone_to_node = func.find_nearest_node(zone_centroids, road_node_file)
 
 # attach od info of each zone to their nearest road network nodes
-list_of_origin_node, destination_node_dict, flow_dict = func.od_interpret(
-    od_df,
-    zone_to_node,
-    col_origin="Area of usual residence",
-    col_destination="Area of workplace",
-    col_count="car",
+list_of_origin_nodes, dict_of_destination_nodes, dict_of_origin_supplies = (
+    func.od_interpret(
+        od_df,
+        zone_to_node,
+        col_origin="Area of usual residence",
+        col_destination="Area of workplace",
+        col_count="car",
+    )
 )
 # extract identical origin nodes
-list_of_origin_node = list(set(list_of_origin_node))
-list_of_origin_node.sort()
+list_of_origin_nodes = list(set(list_of_origin_nodes))
+list_of_origin_nodes.sort()
 
 # %%
 # network creation (igragh)
-name_to_index = {name: index for index, name in enumerate(road_node_file.nd_id)}
-index_to_name = {value: key for key, value in name_to_index.items()}
+node_name_to_index = {name: index for index, name in enumerate(road_node_file.nd_id)}
+node_index_to_name = {value: key for key, value in node_name_to_index.items()}
 test_net_ig = func.create_igraph_network(
-    name_to_index, road_link_file, road_node_file, free_flow_speed_dict
+    node_name_to_index, road_link_file, road_node_file, free_flow_speed_dict
 )
-# edge_idx -> edge_name
 edge_index_to_name = {idx: name for idx, name in enumerate(test_net_ig.es["edge_name"])}
 
-# network initailisation
-(
-    road_link_file,
-    road_type_dict,
-    form_dict,
-    isurban_dict,
-    length_dict,
-    acc_flow_dict,
-    acc_capacity_dict,
-    speed_dict,
-) = func.initialise_igraph_network(
+# network initialisation
+road_link_file = func.initialise_igraph_network(
     road_link_file,
     flow_capacity_dict,
     free_flow_speed_dict,
-    "e_id",
-    "road_classification",
-    "form_of_way",
-    "urban",
+    col_road_classification="road_classification",
 )
 
 # %%
 # flow simulation
 speed_dict, acc_flow_dict, acc_capacity_dict = func.network_flow_model(
-    test_net_ig,
-    list_of_origin_node,
-    flow_dict,
-    destination_node_dict,
-    name_to_index,
-    edge_index_to_name,
-    road_type_dict,
-    form_dict,
-    isurban_dict,
-    length_dict,
-    acc_flow_dict,
-    acc_capacity_dict,
-    speed_dict,
-    "e_id",
+    test_net_ig,  # network
+    road_link_file,  # road
+    node_name_to_index,  # road
+    edge_index_to_name,  # road
+    list_of_origin_nodes,  # od
+    dict_of_origin_supplies,  # od
+    dict_of_destination_nodes,  # od
+    free_flow_speed_dict,  # speed
+    flow_breakpoint_dict,  # speed
+    min_speed_cap,  # speed
+    urban_speed_cap,  # speed
+    col_eid="e_id",
 )
 
 # %%
@@ -163,6 +142,6 @@ road_link_file.acc_capacity = road_link_file.acc_capacity.astype(int)
 # %%
 # export file
 road_link_file.to_file(
-    base_path / "outputs" / "GB_flows_updated.gpkg",
+    base_path / "outputs" / "gb_edge_flows.gpkg",
     driver="GPKG",
 )
