@@ -607,9 +607,9 @@ def network_flow_model(
             temp_edge_flow.temp_acc_flow + temp_edge_flow.adjusted_flow
         )
         temp_edge_flow["speed"] = np.vectorize(partial_speed_flow_func)(
-            temp_edge_flow.combined_label,
-            temp_edge_flow.isurban,
-            temp_edge_flow.total_flow,
+            temp_edge_flow["combined_label"],
+            temp_edge_flow["isUrban"],
+            temp_edge_flow["total_flow"],
         )
         temp_edge_flow["remaining_capacity"] = (
             temp_edge_flow.temp_acc_capacity - temp_edge_flow.adjusted_flow
