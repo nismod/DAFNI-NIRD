@@ -63,7 +63,6 @@ zone_centroids = gpd.read_parquet(
 
 # O-D matrix (2011)
 od_df = pd.read_csv(base_path / "census_datasets" / "od_matrix" / "od_gb_2011.csv")
-print(f"total flows: {od_df.car.sum()}")  # 14_203_635 trips/day
 
 # %%
 # select major roads
