@@ -1,4 +1,5 @@
-# here are some constants used in the network flow model
+"""Constants used in the network flow model
+"""
 
 CONV_METER_TO_MILE = 0.000621371
 CONV_MILE_TO_KM = 1.60934

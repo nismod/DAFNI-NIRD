@@ -1,4 +1,6 @@
-# %%
+"""Road transport model functions
+"""
+
 from typing import Union, Tuple
 from collections import defaultdict
 from functools import partial
@@ -8,8 +10,8 @@ import geopandas as gpd  # type: ignore
 
 import igraph  # type: ignore
 
-import constants as cons
-from utils import get_flow_on_edges
+import nird.constants as cons
+from nird.utils import get_flow_on_edges
 
 from tqdm.auto import tqdm
 import warnings
@@ -17,16 +19,32 @@ import warnings
 warnings.simplefilter("ignore")
 
 
-# %%
-# functions
-# extract major roads
 def select_partial_roads(
     road_links: gpd.GeoDataFrame,
     road_nodes: gpd.GeoDataFrame,
     col_name: str,
     list_of_values: list,
 ) -> Tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
+    """Extract major roads
 
+    Parameters
+    ----------
+    road_links: gpd.GeoDataFrame
+        Edges of the road network.
+    road_nodes: gpd.GeoDataFrame
+        Junctions/nodes of the road network.
+    col_name: str
+        The name of column containing different road classifications.
+    list_of_values: list
+        The road types to be selected, e.g., [Motorways, A Roads, B Roads].
+
+    Returns
+    -------
+    selected_links: gpd.GeoDataFrame
+        The selected types of road links
+    selected_nodes: gpd.GeoDataFrame
+        The selected types of road nodes.
+    """
     selected_links = []
     # road links selection
     for ci in list_of_values:
@@ -53,8 +71,24 @@ def select_partial_roads(
     return selected_links, selected_nodes
 
 
-# urban road classification
 def create_urban_mask(etisplus_urban_roads: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Urban road classification
+
+    Parameters
+    ----------
+    etisplus_urban_roads: gpd.GeoDataFrame
+        ETIS road networks: https://ftp.demis.nl/outgoing/etisplus/datadeliverables/
+
+    Returns
+    -------
+    gpd.GeoDataFrame
+        Polygons indicating urban areas of the Europe.
+    """
+    etisplus_urban_roads = etisplus_urban_roads[
+        etisplus_urban_roads["Urban"] == 1
+    ].reset_index(
+        drop=True
+    )  # extract urban road segements
     buf_geom = etisplus_urban_roads.geometry.buffer(
         500
     )  # create a buffer of 500 meters
@@ -76,15 +110,42 @@ def create_urban_mask(etisplus_urban_roads: gpd.GeoDataFrame) -> gpd.GeoDataFram
 def label_urban_roads(
     road_links: gpd.GeoDataFrame, urban_mask: gpd.GeoDataFrame
 ) -> gpd.GeoDataFrame:
-    road_links = road_links.sjoin(urban_mask, how="left")
-    road_links["urban"] = road_links["index_right"].apply(
+    """Label road segments with "urban" attribute
+
+    Parameters
+    ----------
+    road_links: gpd.GeoDataFrame
+        Edges of the road network.
+    urban_mask: gpd.GeoDataFrame
+        Polygons indicating urban areas of the Europe.
+
+    Returns
+    -------
+    gpd.GeoDataFrame
+        Edges of the road network with urban attributes.
+    """
+    temp_file = road_links.sjoin(urban_mask, how="left")
+    temp_file["urban"] = temp_file["index_right"].apply(
         lambda x: 0 if pd.isna(x) else 1
     )
-    road_links = road_links.drop(columns=["index_right"])
+    max_values = temp_file.groupby("e_id")["urban"].max()
+    road_links = road_links.merge(max_values, on="e_id", how="left")
     return road_links
 
 
 def voc_func(speed: float) -> float:  # speed: mile/hour
+    """Calculate value of cost for travelling
+
+    Parameters
+    ----------
+    speed: float
+        The average flow rate: mile/hour
+
+    Returns
+    -------
+    float
+        Unit cost: pound/km
+    """
     # d = distance * conv_mile_to_km  # km
     s = speed * cons.CONV_MILE_TO_KM  # km/hour
     lpkm = 0.178 - 0.00299 * s + 0.0000205 * (s**2)  # fuel cost (liter/km)
@@ -95,6 +156,22 @@ def voc_func(speed: float) -> float:  # speed: mile/hour
 def cost_func(
     time: float, distance: float, voc: float
 ) -> float:  # time: hour, distance: mile/hour, voc: pound/km
+    """Calculate the time-equivalent cost for traveling
+
+    Parameters
+    ----------
+    time: float
+        The time of travel: hour
+    distance: float
+        The distance of travel: mile
+    voc:
+        Value of Cost: pound/km
+
+    Returns
+    -------
+    float
+        Time-equivalent cost: hour
+    """
     ave_occ = 1.6
     vot = 20  # value of time: pounds/hour
     d = distance * cons.CONV_MILE_TO_KM  # km
@@ -102,10 +179,25 @@ def cost_func(
     return t  # hour
 
 
-# speed functions
 def initial_speed_func(
     road_type: str, form_of_road: str, free_flow_speed_dict: dict
 ) -> Union[float, None]:
+    """Append free-flow speed to each road segment
+
+    Parameters
+    ----------
+    road_type: str
+        The column of road type.
+    form_of_road: str
+        The column of form of road.
+    free_flow_speed_dict: dict
+        Free-flow speeds of different combined road types.
+
+    Returns
+    -------
+    float or None
+        The initial speed: miles/hour
+    """
     if road_type == "M":
         return free_flow_speed_dict["M"]
     elif road_type == "A":
@@ -122,13 +214,36 @@ def initial_speed_func(
 
 def speed_flow_func(
     road_type: str,
-    isurban: int,
+    isUrban: int,
     vp: float,
     free_flow_speed_dict: dict,
     flow_breakpoint_dict: dict,
     min_speed_cap: dict,
     urban_speed_cap: dict,
 ) -> Union[float, None]:
+    """Update the average flow rate of each road segment in terms of flow changes.
+
+    Parameters
+    ----------
+    road_type: str
+        The column of road type.
+    isUrban: int
+        1: urban, 0: suburban
+    vp: float
+        The average daily flow, cars/day.
+    free_flow_speed_dict: dict
+        Free-flow speeds of different combined road types, mile/hour.
+    min_speed_cap: dict
+        The restriction on the lowest flow rate, mile/hour.
+    urban_speed_cap: dict
+        The restriction on the maximum flow rate in urban areas, mile/hour.
+
+    Returns
+    -------
+    float OR None
+        The average flow rate, mile/hour.
+
+    """
     vp = vp / 24
     if road_type == "M":
         initial_speed = free_flow_speed_dict["M"]
@@ -137,12 +252,12 @@ def speed_flow_func(
                 (initial_speed - 0.033 * (vp - flow_breakpoint_dict["M"])),
                 min_speed_cap["M"],
             )
-            if isurban:
+            if isUrban:
                 return min(urban_speed_cap["M"], vt)
             else:
                 return vt
         else:
-            if isurban:
+            if isUrban:
                 return min(urban_speed_cap["M"], initial_speed)
             else:
                 return initial_speed
@@ -153,12 +268,12 @@ def speed_flow_func(
                 (initial_speed - 0.05 * (vp - flow_breakpoint_dict["A_single"])),
                 min_speed_cap["A_single"],
             )
-            if isurban:
+            if isUrban:
                 return min(urban_speed_cap["A_single"], vt)
             else:
                 return vt
         else:
-            if isurban:
+            if isUrban:
                 return min(urban_speed_cap["A_single"], initial_speed)
             else:
                 return initial_speed
@@ -169,18 +284,18 @@ def speed_flow_func(
                 (initial_speed - 0.033 * (vp - flow_breakpoint_dict["A_dual"])),
                 min_speed_cap["A_dual"],
             )
-            if isurban:
+            if isUrban:
                 return min(urban_speed_cap["A_dual"], vt)
             else:
                 return vt
         else:
-            if isurban:
+            if isUrban:
                 return min(urban_speed_cap["A_dual"], initial_speed)
             else:
                 return initial_speed
     elif road_type == "B":
         initial_speed = free_flow_speed_dict["B"]
-        if isurban:
+        if isUrban:
             return min(urban_speed_cap["B"], initial_speed)
         else:
             return initial_speed
@@ -190,11 +305,26 @@ def speed_flow_func(
 
 
 def filter_less_than_one(arr: np.ndarray) -> np.ndarray:
+    """Convert values less than one to zero"""
     return np.where(arr >= 1, arr, 0)
 
 
-# find nearest network node for each admin centroid
 def find_nearest_node(zones: gpd.GeoDataFrame, road_nodes: gpd.GeoDataFrame) -> dict:
+    """Find nearest network node for each admin centroid
+
+    Parameters
+    ----------
+    zones: gpd.GeoDataFrame
+        Administrative population-weighted centroids.
+    road_nodes: gpd.GeoDataFrame
+        Nodes of road network.
+
+    Returns
+    -------
+    dict
+        Convert from centroids to road nodes.
+
+    """
     nearest_node_dict = {}  # node_idx: zone_idx
     for zidx, z in zones.iterrows():
         closest_road_node = road_nodes.sindex.nearest(z.geometry, return_all=False)[1][
@@ -217,10 +347,6 @@ def find_nearest_node(zones: gpd.GeoDataFrame, road_nodes: gpd.GeoDataFrame) -> 
     return zone_to_node
 
 
-# interpret od matrix
-# {list of origins,
-# list of destinations attached to each origin,
-# list of supplies from each origin}
 def od_interpret(
     od_matrix: pd.DataFrame,
     zone_to_node: dict,
@@ -228,7 +354,30 @@ def od_interpret(
     col_destination: str,
     col_count: str,
 ) -> Tuple[list, dict, dict]:
+    """Generate a list of origins along with their associated destinations and outbound trips.
 
+    Parameters
+    ----------
+    od_matrix: pd.DataFrame
+        Trips between Origin-Destination pairs.
+    zone_to_node: dict
+        Dictionary for conversion from zone centroids to road nodes.
+    col_origin: str
+        Column of origins.
+    col_destination: str
+        Column of destinations.
+    col_count: str
+        Column that records the number of trips of each OD pair.
+
+    Returns
+    -------
+    list_of_origins: list
+        Origins of the OD matrix
+    destination_dict: dict
+        Destinations attached to each origin.
+    supply_dict: dict
+        The number of outbound trips from each origin.
+    """
     list_of_origins = []
     destination_dict: dict[str, list[str]] = defaultdict(list)
     supply_dict: dict[str, list[float]] = defaultdict(list)
@@ -255,16 +404,33 @@ def od_interpret(
     return list_of_origins, destination_dict, supply_dict
 
 
-# network creation
 def create_igraph_network(
-    name_to_index: dict,
+    node_name_to_index: dict,
     road_links: gpd.GeoDataFrame,
     road_nodes: gpd.GeoDataFrame,
     initialSpeeds: dict,
 ) -> igraph.Graph:
+    """Network creation using igraph.
+
+    Parameters
+    ----------
+    node_name_to_index: dict
+        The relation between node's name and node's index in a network.
+    road_links: gpd.GeoDataFrame
+        Edges of a road network.
+    road_nodes: gpd.GeoDataFrame
+        Nodes of a road network.
+    initialSpeeds: dict
+        Free-flow speeds of different types of roads.
+
+    Returns
+    -------
+    igraph.Graph
+        A road network.
+    """
     nodeList = [
         (
-            name_to_index[node.id],
+            node_name_to_index[node.id],
             {
                 "lon": node.geometry.x,
                 "lat": node.geometry.y,
@@ -286,7 +452,7 @@ def create_igraph_network(
         edge_type = link.road_classification[0]
         edge_form = link.form_of_way
         edgeNameList.append(edge_name)
-        edgeList.append((name_to_index[edge_from], name_to_index[edge_to]))
+        edgeList.append((node_name_to_index[edge_from], node_name_to_index[edge_to]))
         edgeLengthList.append(edge_length)
         edgeTypeList.append(edge_type)
         edgeFormList.append(edge_form)
@@ -315,13 +481,30 @@ def create_igraph_network(
     return test_net
 
 
-# network initialization
 def initialise_igraph_network(
     road_links: gpd.GeoDataFrame,
     initial_capacity_dict: dict,
     initial_speed_dict: dict,
-    col_road_classification=str,
+    col_road_classification: str,
 ) -> gpd.GeoDataFrame:
+    """Road Network Initialisation
+
+    Parameters
+    ----------
+    road_links: gpd.GeoDataFrame
+        Edges of the road network.
+    initial_capacity_dict: dict
+        The capacity of different types of roads.
+    initial_speed_dict: dict
+        Free-flow speeds of different types of roads.
+    col_road_classification: str
+        The column of road classification.
+
+    Returns
+    -------
+    gpd.GeoDataFrame
+        Road links with combined_label, flow counts, capacities, and flow rages.
+    """
     # road_types: M, A, B
     road_links["road_type_label"] = road_links[col_road_classification].str[0]
     # road_forms: M, A_dual, A_single, B
@@ -349,6 +532,24 @@ def update_od_matrix(
     supply_dict: dict,
     destination_dict: dict,
 ) -> Tuple[list, dict, dict, float]:
+    """Drop the origin-destination pairs with no accessible link or unallocated trips
+
+    Parameters
+    ----------
+    temp_flow_matrix: pd.DataFrame
+        A temporary flow matrix: [origins, destinations, paths, flows]
+    supply_dict: dict
+        The number of outbound trips from each origin.
+    destination_dict: dict
+        List of destinations attached with each origin.
+
+    Returns
+    -------
+    new_list_of_origins: list
+    new_supply_dict: dict
+    new_destination: dict
+    non_allocated_flow: float
+    """
     # drop the origin-destination pairs ("path = []")
     temp_df = temp_flow_matrix[temp_flow_matrix["path"].apply(lambda x: len(x) == 0)]
     non_allocated_flow = temp_df.flow.sum()
@@ -364,7 +565,7 @@ def update_od_matrix(
     # drop origins with zero supply
     new_supply_dict = {}
     new_destination_dict = {}
-    new_list_of_origins = {}
+    new_list_of_origins = []
     for origin, list_of_counts in supply_dict.items():
         tt_supply = sum(list_of_counts)
         if tt_supply > 0:
@@ -391,6 +592,26 @@ def update_network_structure(
     speed_dict: dict,
     temp_edge_flow: pd.DataFrame,
 ) -> Tuple[igraph.Graph, dict]:
+    """Update the network structure (links and nodes)
+
+    Parameters
+    ----------
+    network: igraph.Graph
+        The road network.
+    length_dict: dict
+        Lengths of road links.
+    speed_dict:
+        The flow rates of road links.
+    temp_edge_flow: pd.DataFrame
+        A temporary file to record edge flows in the network flow model.
+
+    Returns
+    -------
+    network: igraph.Graph
+        the updated network.
+    edge_index_to_name:
+        The updated edge_index_to_name dict.
+    """
     zero_capacity_edges = set(
         temp_edge_flow.loc[temp_edge_flow["remaining_capacity"] < 1, "e_id"].tolist()
     )
@@ -446,6 +667,40 @@ def network_flow_model(
     urban_speed_cap: dict,
     col_eid: str,
 ) -> Tuple[dict, dict, dict]:
+    """Network flow model
+
+    Parameters
+    ----------
+    network: igraph.Graph
+        The road network.
+    road_links: gpd.GeoDataFrame
+        Edges of the road network.
+    node_name_to_index: dict
+        Convert from node name to node index of the road network.
+    edge_index_to_name: dict
+        Convert from edge index to edge name of the road network.
+    list_of_origins: list
+        Origins of the OD matrix.
+    supply_dict: dict
+        The counts of outbound trips from each origin of the OD matrix.
+    destination_dict: dict
+        List of destinations attached to each origin of the OD matrix.
+    free_flow_speed_dict: dict
+        Free-flow speeds of different combined road types, mile/hour.
+    min_speed_cap: dict
+        The restriction on the lowest flow rate, mile/hour.
+    urban_speed_cap: dict
+        The restriction on the maximum flow rate in urban areas, mile/hour.
+
+    Returns
+    -------
+    acc_speed_dict: dict
+        The updated average flow rate on each road link.
+    acc_flow_dict
+        The accumulated flow amount on each road link.
+    acc_capacity_dict
+        The remaining capacity of each road link.
+    """
 
     partial_speed_flow_func = partial(
         speed_flow_func,

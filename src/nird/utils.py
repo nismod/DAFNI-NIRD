@@ -1,5 +1,4 @@
-"""Functions for preprocessing road data
-    WILL MODIFY LATER
+"""Utility functions
 """
 
 import os
