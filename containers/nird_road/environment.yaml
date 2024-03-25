@@ -1,0 +1,12 @@
+name: nird_road
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - pandas
+  - python-igraph=0.9.*
+  - tqdm
+  - geopandas
+  - snkit
+  - pyarrow
