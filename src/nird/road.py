@@ -1,30 +1,27 @@
 """Road transport model functions
 """
 
-from typing import Union, Tuple
 from collections import defaultdict
 from functools import partial
+from typing import Dict, List, Union, Tuple
+
+import igraph
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
 import geopandas as gpd
+from tqdm.auto import tqdm
 
-import igraph
 
 import nird.constants as cons
 from nird.utils import get_flow_on_edges
-
-from tqdm.auto import tqdm
-import warnings
-
-warnings.simplefilter("ignore")
 
 
 def select_partial_roads(
     road_links: gpd.GeoDataFrame,
     road_nodes: gpd.GeoDataFrame,
     col_name: str,
-    list_of_values: list[str],
+    list_of_values: List[str],
 ) -> Tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
     """Extract major roads
 
@@ -183,7 +180,7 @@ def cost_func(
 def initial_speed_func(
     road_type: str,
     form_of_road: str,
-    free_flow_speed_dict: dict[str, float],
+    free_flow_speed_dict: Dict[str, float],
 ) -> Union[float, None]:
     """Append free-flow speed to each road segment
 
@@ -219,10 +216,10 @@ def speed_flow_func(
     road_type: str,
     isUrban: int,
     vp: float,
-    free_flow_speed_dict: dict[str, float],
-    flow_breakpoint_dict: dict[str, int],
-    min_speed_cap: dict[str, float],
-    urban_speed_cap: dict[str, float],
+    free_flow_speed_dict: Dict[str, float],
+    flow_breakpoint_dict: Dict[str, int],
+    min_speed_cap: Dict[str, float],
+    urban_speed_cap: Dict[str, float],
 ) -> Union[float, None]:
     """Update the average flow rate of each road segment in terms of flow changes.
 
@@ -314,7 +311,7 @@ def filter_less_than_one(arr: npt.NDArray[np.float64]) -> npt.NDArray[np.float64
 
 def find_nearest_node(
     zones: gpd.GeoDataFrame, road_nodes: gpd.GeoDataFrame
-) -> dict[str, str]:
+) -> Dict[str, str]:
     """Find nearest network node for each admin centroid
 
     Parameters
@@ -354,11 +351,11 @@ def find_nearest_node(
 
 def od_interpret(
     od_matrix: pd.DataFrame,
-    zone_to_node: dict[str, str],
+    zone_to_node: Dict[str, str],
     col_origin: str,
     col_destination: str,
     col_count: str,
-) -> Tuple[list[str], dict[str, list[str]], dict[str, list[float]]]:
+) -> Tuple[List[str], Dict[str, List[str]], Dict[str, List[float]]]:
     """Generate a list of origins along with their associated destinations and outbound trips.
 
     Parameters
@@ -384,8 +381,8 @@ def od_interpret(
         The number of outbound trips from each origin.
     """
     list_of_origins = []
-    destination_dict: dict[str, list[str]] = defaultdict(list)
-    supply_dict: dict[str, list[float]] = defaultdict(list)
+    destination_dict: Dict[str, List[str]] = defaultdict(list)
+    supply_dict: Dict[str, List[float]] = defaultdict(list)
 
     for idx in tqdm(range(od_matrix.shape[0]), desc="Processing"):
         from_zone: str = od_matrix.loc[idx, col_origin]  # type: ignore
@@ -410,10 +407,10 @@ def od_interpret(
 
 
 def create_igraph_network(
-    node_name_to_index: dict[str, int],
+    node_name_to_index: Dict[str, int],
     road_links: gpd.GeoDataFrame,
     road_nodes: gpd.GeoDataFrame,
-    initialSpeeds: dict[str, float],
+    initialSpeeds: Dict[str, float],
 ) -> igraph.Graph:
     """Network creation using igraph.
 
@@ -488,8 +485,8 @@ def create_igraph_network(
 
 def initialise_igraph_network(
     road_links: gpd.GeoDataFrame,
-    initial_capacity_dict: dict[str, int],
-    initial_speed_dict: dict[str, float],
+    initial_capacity_dict: Dict[str, int],
+    initial_speed_dict: Dict[str, float],
     col_road_classification: str,
 ) -> gpd.GeoDataFrame:
     """Road Network Initialisation
@@ -534,9 +531,9 @@ def initialise_igraph_network(
 
 def update_od_matrix(
     temp_flow_matrix: pd.DataFrame,
-    supply_dict: dict[str, list[int]],
-    destination_dict: dict[str, list[str]],
-) -> Tuple[list[str], dict[str, list[int]], dict[str, list[str]], float]:
+    supply_dict: Dict[str, List[int]],
+    destination_dict: Dict[str, List[str]],
+) -> Tuple[List[str], Dict[str, List[int]], Dict[str, List[str]], float]:
     """Drop the origin-destination pairs with no accessible link or unallocated trips
 
     Parameters
@@ -593,10 +590,10 @@ def update_od_matrix(
 
 def update_network_structure(
     network: igraph.Graph,
-    length_dict: dict[str, float],
-    speed_dict: dict[str, float],
+    length_dict: Dict[str, float],
+    speed_dict: Dict[str, float],
     temp_edge_flow: pd.DataFrame,
-) -> Tuple[igraph.Graph, dict[int, str]]:
+) -> Tuple[igraph.Graph, Dict[int, str]]:
     """Update the network structure (links and nodes)
 
     Parameters
@@ -661,17 +658,17 @@ def update_network_structure(
 def network_flow_model(
     network: igraph.Graph,
     road_links: gpd.GeoDataFrame,
-    node_name_to_index: dict[str, int],
-    edge_index_to_name: dict[int, str],
-    list_of_origins: list[str],
-    supply_dict: dict[str, list[int]],
-    destination_dict: dict[str, list[str]],
-    free_flow_speed_dict: dict[str, float],
-    flow_breakpoint_dict: dict[str, int],
-    min_speed_cap: dict[str, float],
-    urban_speed_cap: dict[str, float],
+    node_name_to_index: Dict[str, int],
+    edge_index_to_name: Dict[int, str],
+    list_of_origins: List[str],
+    supply_dict: Dict[str, List[int]],
+    destination_dict: Dict[str, List[str]],
+    free_flow_speed_dict: Dict[str, float],
+    flow_breakpoint_dict: Dict[str, int],
+    min_speed_cap: Dict[str, float],
+    urban_speed_cap: Dict[str, float],
     col_eid: str,
-) -> Tuple[dict[str, float], dict[str, int], dict[str, int]]:
+) -> Tuple[dict[str, float], Dict[str, int], Dict[str, int]]:
     """Network flow model
 
     Parameters
@@ -724,18 +721,18 @@ def network_flow_model(
     print(f"The initial number of destinations: {number_of_destinations}")
 
     # road link properties
-    edge_cbtype_dict: dict[str, str] = road_links.set_index(col_eid)[
+    edge_cbtype_dict: Dict[str, str] = road_links.set_index(col_eid)[
         "combined_label"
     ].to_dict()
-    edge_isUrban_dict: dict[str, int] = road_links.set_index(col_eid)["urban"].to_dict()
-    edge_length_dict: dict[str, float] = (
+    edge_isUrban_dict: Dict[str, int] = road_links.set_index(col_eid)["urban"].to_dict()
+    edge_length_dict: Dict[str, float] = (
         road_links.set_index(col_eid)["geometry"].length * cons.CONV_METER_TO_MILE
     ).to_dict()
-    acc_flow_dict: dict[str, int] = road_links.set_index(col_eid)["acc_flow"].to_dict()
-    acc_capacity_dict: dict[str, int] = road_links.set_index(col_eid)[
+    acc_flow_dict: Dict[str, int] = road_links.set_index(col_eid)["acc_flow"].to_dict()
+    acc_capacity_dict: Dict[str, int] = road_links.set_index(col_eid)[
         "acc_capacity"
     ].to_dict()
-    acc_speed_dict: dict[str, float] = road_links.set_index(col_eid)[
+    acc_speed_dict: Dict[str, float] = road_links.set_index(col_eid)[
         "ave_flow_rate"
     ].to_dict()
 

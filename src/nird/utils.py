@@ -1,14 +1,14 @@
 """Utility functions
 """
 
-import os
 import json
+import os
 from collections import defaultdict
 from math import sin, cos, atan2, sqrt, pi
 from typing import Dict, List, Optional, Tuple, Union
 
-import geopandas as gpd
 import igraph
+import geopandas as gpd
 import networkx
 import numpy as np
 import pandas as pd
