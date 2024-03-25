@@ -14,7 +14,17 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
-dependencies = []
+dependencies = [
+    "igraph",
+    "geopandas",
+    "networkx",
+    "numpy",
+    "pandas",
+    "scipy",
+    "shapely",
+    "snkit",
+    "tqdm"
+]
 
 [project.optional-dependencies]
 dev = [
@@ -24,7 +34,8 @@ dev = [
     "pandas-stubs",
     "pre-commit",
     "pytest",
-    "pytest-cov"
+    "pytest-cov",
+    "types-tqdm"
 ]
 docs = ["sphinx", "m2r2"]
 

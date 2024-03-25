@@ -39,7 +39,6 @@ jobs:
 
       - name: Type check with mypy
         run: |
-          mypy --install-types
           mypy --strict .
 
       - name: Test with pytest
