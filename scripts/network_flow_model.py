@@ -1,4 +1,5 @@
 # %%
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -12,7 +13,15 @@ import warnings
 
 warnings.simplefilter("ignore")
 
-base_path = Path(load_config()["paths"]["base_path"])
+try:
+    # call this script with an argument:
+    # python network_flow_model.py ./path/to/config.json
+    config_path = sys.argv[1]
+except IndexError:
+    # default (would be "./config.json")
+    config_path = None
+
+base_path = Path(load_config(config_path)["paths"]["base_path"])
 
 
 # %%
