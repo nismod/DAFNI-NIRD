@@ -4,8 +4,8 @@ from pathlib import Path
 import pandas as pd
 import geopandas as gpd  # type: ignore
 
-from utils import load_config
-import functions as func
+from nird.utils import load_config
+import nird.road as func
 
 import json
 import warnings
@@ -51,10 +51,11 @@ osoprd_node = gpd.read_parquet(
 
 # ETISPLUS roads
 etisplus_road_links = gpd.read_parquet(
-    base_path / "networks" / "road" / "etisplus_road_links.geoparquet"
+    base_path / "networks" / "road" / "etisplus_urban.geoparquet"
 )
-etisplus_urban_roads = etisplus_road_links[["Urban", "geometry"]]
-etisplus_urban_roads = etisplus_urban_roads[etisplus_urban_roads["Urban"] == 1]
+etisplus_road_links = etisplus_road_links[
+    etisplus_road_links["Urban"] == 1
+]  # urban links
 
 # population-weighted centroids (combined spatial units)
 zone_centroids = gpd.read_parquet(
@@ -72,9 +73,8 @@ road_link_file, road_node_file = func.select_partial_roads(
     col_name="road_classification",
     list_of_values=["A Road", "B Road", "Motorway"],
 )
-
 # classify the selected major road links into urban/suburban
-urban_mask = func.create_urban_mask(etisplus_urban_roads)
+urban_mask = func.create_urban_mask(etisplus_road_links)  # urban areas
 road_link_file = func.label_urban_roads(road_link_file, urban_mask)
 
 # find the nearest road node for each zone
@@ -141,6 +141,5 @@ road_link_file.acc_capacity = road_link_file.acc_capacity.astype(int)
 # %%
 # export file
 road_link_file.to_file(
-    base_path / "outputs" / "gb_edge_flows.gpkg",
-    driver="GPKG",
+    base_path / ".." / "outputs" / "gb_edge_flows.gpkg", driver="GPKG", engine="pyogrio"
 )
