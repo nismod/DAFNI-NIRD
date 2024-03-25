@@ -43,24 +43,21 @@ def select_partial_roads(
     selected_nodes: gpd.GeoDataFrame
         The selected types of road nodes.
     """
-    selected_links_dfs = []
-    # road links selection
-    for ci in list_of_values:
-        selected_links_dfs.append(road_links[road_links[col_name] == ci])
-
-    selected_links = pd.concat(selected_links_dfs, ignore_index=True)
-    selected_links = gpd.GeoDataFrame(selected_links, geometry="geometry")
-
+    mask = road_links[col_name].isin(list_of_values)
+    selected_links = road_links[mask].copy()
     selected_links["e_id"] = selected_links["id"]
     selected_links["from_id"] = selected_links["start_node"]
     selected_links["to_id"] = selected_links["end_node"]
 
     # road nodes selection
     sel_node_idx = list(
-        set(selected_links.start_node.tolist() + selected_links.end_node.tolist())
+        set(
+            selected_links.start_node.unique().tolist()
+            + selected_links.end_node.unique().tolist()
+        )
     )
 
-    selected_nodes = road_nodes[road_nodes.id.isin(sel_node_idx)]
+    selected_nodes = road_nodes[road_nodes.id.isin(sel_node_idx)].copy()
     selected_nodes.reset_index(drop=True, inplace=True)
     selected_nodes["nd_id"] = selected_nodes.id
     selected_nodes["lat"] = selected_nodes.geometry.y
