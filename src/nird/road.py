@@ -665,7 +665,7 @@ def network_flow_model(
     min_speed_cap: Dict[str, float],
     urban_speed_cap: Dict[str, float],
     col_eid: str,
-) -> Tuple[dict[str, float], Dict[str, int], Dict[str, int]]:
+) -> Tuple[Dict[str, float], Dict[str, int], Dict[str, int]]:
     """Network flow model
 
     Parameters
