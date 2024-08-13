@@ -729,7 +729,8 @@ def find_least_cost_path(params: Tuple) -> Tuple[int, list, list, list]:
 
 def compute_edge_costs(origin, destination, path):
     """Calculate the total travel cost for the path"""
-    total_cost = sum(shared_network.es[edge_idx]["weight"] for edge_idx in path)
+    # total_cost = sum(shared_network.es[edge_idx]["weight"] for edge_idx in path)
+    total_cost = pd.Series(path).map(edge_weight_dict).sum()
     return {(origin, destination): total_cost}
 
 
@@ -748,6 +749,8 @@ def worker_init(shared_network_pkl):
     """
     global shared_network
     shared_network = pickle.loads(shared_network_pkl)
+    global edge_weight_dict
+    edge_weight_dict = {k: v["weight"] for k, v in enumerate(shared_network.es)}
     return
 
 
@@ -803,9 +806,6 @@ def network_flow_model(
         create_igraph_network(road_links, road_nodes, free_flow_speed_dict)
     )  # this returns a network and edge weights dict(edge_name, edge_weight)
 
-    # dump the network for shared usage in multiprocess
-    shared_network_pkl = pickle.dumps(network)
-
     # network initialisation
     road_links = net_init(
         road_links,
@@ -854,6 +854,8 @@ def network_flow_model(
     od_cost_dict = defaultdict(float)
     while total_remain > 0:
         print(f"No.{iter_flag} iteration starts:")
+        # dump the network for shared usage in multiprocess
+        shared_network_pkl = pickle.dumps(network)
         list_of_spath = []
         args = []
         # find the shortest path for each origin-destination pair
@@ -877,6 +879,7 @@ def network_flow_model(
             list_of_spath = pool.map(find_least_cost_path, args)
             # [origin(name), destinations(name), path(idx), flow(int)]
         print(f"The least-cost path flow allocation time: {time.time() - st}.")
+
         # calculate od flow matrix
         temp_flow_matrix = pd.DataFrame(
             list_of_spath,
@@ -905,7 +908,7 @@ def network_flow_model(
             od_unit_cost_dict = pool.starmap(compute_edge_costs, args)
         print(f"Computation for OD costs time: {time.time() - st}.")
 
-        # to combine multiple dicts to one:
+        # to combine multiple dicts to one
         od_unit_cost_dict = dict(ChainMap(*od_unit_cost_dict))
         temp_flow_matrix["unit_od_cost"] = temp_flow_matrix.apply(
             lambda row: od_unit_cost_dict.get((row["origin"], row["destination"]), 0),
