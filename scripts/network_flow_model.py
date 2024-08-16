@@ -1,6 +1,6 @@
 # %%
 from pathlib import Path
-
+import time
 import pandas as pd
 import geopandas as gpd  # type: ignore
 
@@ -13,8 +13,9 @@ import warnings
 warnings.simplefilter("ignore")
 
 base_path = Path(load_config()["paths"]["base_path"])
-# %%
+
 if __name__ == "__main__":
+    start_time = time.time()
     # model parameters
     with open(base_path / "parameters" / "flow_breakpoint_dict.json", "r") as f:
         flow_breakpoint_dict = json.load(f)
@@ -39,7 +40,8 @@ if __name__ == "__main__":
     od_node_2021 = pd.read_csv(
         base_path / "census_datasets" / "od_matrix" / "od_gb_oa_2021_node.csv"
     )
-    # od_node_2021 = od_node_2021.head(10)
+    od_node_2021["Car21"] = od_node_2021["Car21"] * 2
+    # od_node_2021 = od_node_2021.head(1000)
     print(f"total flows: {od_node_2021.Car21.sum()}")
 
     # generate OD pairs
@@ -52,7 +54,10 @@ if __name__ == "__main__":
         speed_dict,
         acc_flow_dict,
         acc_capacity_dict,
-        od_cost_dict,
+        od_voc_dict,
+        od_vot_dict,
+        od_toll_dict,
+        isolated_od_dict,
     ) = func.network_flow_model(
         road_link_file,  # road
         road_node_file,  # road
@@ -74,10 +79,30 @@ if __name__ == "__main__":
     road_link_file.acc_flow = road_link_file.acc_flow.astype(int)
     road_link_file.acc_capacity = road_link_file.acc_capacity.astype(int)
     # calculate od travel costs
-    od_node_2021["od_cost"] = od_node_2021.apply(
-        lambda row: od_cost_dict[(row["origin_node"], row["destination_node"])], axis=1
+    od_node_2021["od_voc"] = od_node_2021.apply(
+        lambda row: od_voc_dict.get((row["origin_node"], row["destination_node"])),
+        axis=1,
+    )  # value or NAN
+    od_node_2021["od_vot"] = od_node_2021.apply(
+        lambda row: od_vot_dict.get((row["origin_node"], row["destination_node"])),
+        axis=1,
+    )  # value or NAN
+    od_node_2021["od_toll"] = od_node_2021.apply(
+        lambda row: od_toll_dict.get((row["origin_node"], row["destination_node"])),
+        axis=1,
+    )  # value or NAN
+    od_node_2021["od_cost"] = (
+        od_node_2021.od_voc + od_node_2021.od_vot + od_node_2021.od_toll
     )
+    isolated_od_df = pd.Series(isolated_od_dict).reset_index()
+    isolated_od_df.columns = ["origin", "destination", "isolated_flows"]
+    print(f"The total simulation time: {time.time() - start_time}")
 
     # export files
-    road_link_file.to_parquet(base_path.parent / "outputs" / "gb_edge_flows.geoparquet")
-    od_node_2021.to_csv(base_path.parent / "outputs" / "od_costs.csv", index=False)
+    road_link_file.to_parquet(
+        base_path.parent / "outputs" / "gb_edge_flows_0816.geoparquet"
+    )
+    od_node_2021.to_csv(base_path.parent / "outputs" / "od_costs_0816.csv", index=False)
+    isolated_od_df.to_csv(
+        base_path.parent / "outputs" / "isolated_od_flows_0816.csv", index=False
+    )
