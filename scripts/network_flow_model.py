@@ -14,6 +14,7 @@ warnings.simplefilter("ignore")
 
 base_path = Path(load_config()["paths"]["base_path"])
 
+# %%
 if __name__ == "__main__":
     start_time = time.time()
     # model parameters
@@ -40,8 +41,10 @@ if __name__ == "__main__":
     od_node_2021 = pd.read_csv(
         base_path / "census_datasets" / "od_matrix" / "od_gb_oa_2021_node.csv"
     )
+
+    od_node_2021 = od_node_2021[od_node_2021.Car21 > 1].reset_index(drop=True)
     od_node_2021["Car21"] = od_node_2021["Car21"] * 2
-    # od_node_2021 = od_node_2021.head(1000)
+    od_node_2021 = od_node_2021.head(100)
     print(f"total flows: {od_node_2021.Car21.sum()}")
 
     # generate OD pairs
@@ -57,6 +60,7 @@ if __name__ == "__main__":
         od_voc_dict,
         od_vot_dict,
         od_toll_dict,
+        od_flow_dict,
         isolated_od_dict,
     ) = func.network_flow_model(
         road_link_file,  # road
@@ -78,7 +82,12 @@ if __name__ == "__main__":
     # change field types
     road_link_file.acc_flow = road_link_file.acc_flow.astype(int)
     road_link_file.acc_capacity = road_link_file.acc_capacity.astype(int)
-    # calculate od travel costs
+
+    # append the simulation results (flows and costs)
+    od_node_2021["od_flow"] = od_node_2021.apply(
+        lambda row: od_flow_dict.get((row["origin_node"], row["destination_node"])),
+        axis=1,
+    )  # value or NAN
     od_node_2021["od_voc"] = od_node_2021.apply(
         lambda row: od_voc_dict.get((row["origin_node"], row["destination_node"])),
         axis=1,
@@ -95,14 +104,16 @@ if __name__ == "__main__":
         od_node_2021.od_voc + od_node_2021.od_vot + od_node_2021.od_toll
     )
     isolated_od_df = pd.Series(isolated_od_dict).reset_index()
-    isolated_od_df.columns = ["origin", "destination", "isolated_flows"]
     print(f"The total simulation time: {time.time() - start_time}")
 
     # export files
     road_link_file.to_parquet(
-        base_path.parent / "outputs" / "gb_edge_flows_0816.geoparquet"
+        base_path.parent / "outputs" / "gb_edge_flows_test.geoparquet"
     )
-    od_node_2021.to_csv(base_path.parent / "outputs" / "od_costs_0816.csv", index=False)
-    isolated_od_df.to_csv(
-        base_path.parent / "outputs" / "isolated_od_flows_0816.csv", index=False
-    )
+    od_node_2021.to_csv(base_path.parent / "outputs" / "od_costs_test.csv", index=False)
+
+    if isolated_od_df.shape[0] != 0:  # in case of empty df
+        isolated_od_df.columns = ["origin", "destination", "isolated_flows"]
+        isolated_od_df.to_csv(
+            base_path.parent / "outputs" / "isolated_od_flows_test.csv", index=False
+        )
