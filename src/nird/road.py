@@ -3,7 +3,6 @@
 
 from typing import Union, Tuple, List, Dict
 from collections import defaultdict
-from functools import partial
 
 import numpy as np
 import pandas as pd
@@ -280,36 +279,55 @@ def edge_initial_speed_func(
     urban_flow_speed_dict: Dict[str, float],
     min_flow_speed_dict: Dict[str, float],  # add a minimum speed cap
     max_flow_speed_dict: Dict[str, float] = None,
-) -> pd.DataFrame:
-    """Calculate the initial vehicle speed for network edges."""
+) -> Union[pd.DataFrame, Dict[str, float]]:
+    """Calculate the initial vehicle speed for network edges.
+
+    Parameters
+    ----------
+    road_links: pd.DataFrame
+        network link features
+    free_flow_speed_dict: Dict
+        free-flow vehicle operating speed on roads: M, A(single/dual), B
+    urban_flow_speed_dict: Dict
+        set the maximum vehicle speed restrictions in urban areas
+    min_flow_speed_dict: Dict
+        minimum vehicle operating speeds
+    max_flow_speed_dict: Dict
+        maximum safe vehicel operatin speeds on flooded roads
+
+    Returns
+    -------
+    road_links: pd.DataFrame
+        with speed information
+    initial_speed_dict: Dict
+        initial vehicle operating speed of existing road links
+    """
+
     assert "combined_label" in road_links.columns, "combined_label column not exists!"
+    assert "urban" in road_links.columns, "urban column not exists!"
 
     road_links["free_flow_speeds"] = road_links.combined_label.map(free_flow_speed_dict)
-    # if urban area:
-    road_links[road_links["urban"], "free_flow_speeds"] = road_links.combined_label.map(
-        urban_flow_speed_dict
-    )
+    road_links.loc[road_links["urban"] == 1, "free_flow_speeds"] = road_links[
+        "combined_label"
+    ].map(urban_flow_speed_dict)
     road_links["min_flow_speeds"] = road_links.combined_label.map(min_flow_speed_dict)
-    road_links["initial_speeds"] = road_links.free_flow_speeds
-
+    road_links["initial_speeds"] = road_links["free_flow_speeds"]
     if max_flow_speed_dict is not None:
         road_links["max_speeds"] = road_links.e_id.map(max_flow_speed_dict)
-        # max < min: close the roads
+        # if max < min: close the roads
         road_links.loc[
             road_links.max_speeds < road_links.min_flow_speeds, "initial_speeds"
         ] = 0.0
-        # min < max < free
+        # if min < max < free
         road_links.loc[
             (road_links.max_speeds >= road_links.min_flow_speeds)
             & (road_links.max_speeds < road_links.free_flow_speeds),
             "initial_speeds",
         ] = road_links.max_speeds
-        # max > free
-        road_links.loc[road_links.max_speeds >= road_links.free_flow_speeds] = (
-            road_links.free_flow_speeds
-        )
-        road_links = road_links[road_links.initial_speeds > 0]  # drop the closed roads
+        # if max > free: free flow speeds (default)
+        road_links = road_links[road_links.initial_speeds > 0]
         road_links.reset_index(drop=True, inplace=True)
+
     initial_speed_dict = road_links.set_index("e_id")["initial_speeds"]
     return road_links, initial_speed_dict
 
@@ -318,6 +336,8 @@ def edge_init(
     road_links: gpd.GeoDataFrame,
     initial_capacity_dict: Dict[str, float],
     free_flow_speed_dict: Dict[str, float],
+    urban_flow_speed_dict: Dict[str, float],
+    min_flow_speed_dict: Dict[str, float],
     max_flow_speed_dict: Dict[str, float],
 ) -> gpd.GeoDataFrame:
     """Network edges initialisation.
@@ -325,26 +345,33 @@ def edge_init(
     Parameters
     ----------
     road_links: gpd.GeoDataFrame
-    initial_capacity_dict: dict
+    initial_capacity_dict: Dict
         The capacity of different types of road links.
-    free_flow_speed_dict: dict
+    free_flow_speed_dict: Dict
         The free-flow edge speed of different types of road links.
-    max_flow_speed_dict: dict
+    urban_flow_speed_dict: Dict
+        The maximum vehicle operating speed restriction in urban areas.
+    min_flow_speed_dict: Dict
+        The minimum vehicle operating speeds.
+    max_flow_speed_dict: Dict
         The maximum flow speed of the flooded road links.
 
     Returns
     -------
-    gpd.GeoDataFrame with added attributes:
-        initial_speeds: initial edge speeds (mph).
-        acc_flow: edge flows (cars).
-        acc_capacities: edge capacities (cars/day).
-        acc_speed: average flow speeds (mph).
+    road_links: pd.DataFrame
+        with added attributes of initial edge flow, capacity, and speed.
+    initial_speed_dict: Dict
+        initial vehicle operating speed of existing road links.
     """
     # reclassify road links
     road_links = edge_reclassification_func(road_links)
     # initial edge flow speeds (mph)
     road_links, initial_speed_dict = edge_initial_speed_func(
-        road_links, free_flow_speed_dict, max_flow_speed_dict
+        road_links,
+        free_flow_speed_dict,
+        urban_flow_speed_dict,
+        min_flow_speed_dict,
+        max_flow_speed_dict,
     )
     # dynamic edge flows (cars/day)
     road_links["acc_flow"] = 0.0
@@ -363,17 +390,38 @@ def speed_flow_func(
     flow_breakpoint_dict: Dict[str, float],
     initial_speed_dict: Dict[str, float],
     min_speed_dict: Dict[str, float],
-):
-    assert "total flow" in road_links.columns, "total_flow column not exists!"
-    assert "combined_label" in road_links.columns, "combined_label column not exists!"
+) -> pd.Series:
+    """Dynamic relationship between vehicle operating speeds and traffic flows.
 
+    Parameters
+    ----------
+    road_links: pd.DataFrame
+        Road link features
+    flow_breakpoint_dict: Dict
+        The breakpoint flow of roads: M, A(single/dual), and B
+    initial_speed_dict: Dict
+        The initial vehicle operating speeds (mph).
+    min_speed_dict: Dict
+        The minimum vehicle operation speeds (mph).
+
+    Returns
+    -------
+    Road_links["speeds"]: pd.Series
+        The dynamic vehicle operating speeds.
+    """
+    assert "total_flow" in road_links.columns, "total_flow column not exists!"
+    assert "combined_label" in road_links.columns, "combined_label column not exists!"
     # set initial speeds
     road_links["initial_flow_speeds"] = road_links.e_id.map(initial_speed_dict)
     road_links["min_flow_speeds"] = road_links.combined_label.map(min_speed_dict)
     # model speed-flow changes if flow reaches the breakout flow
     road_links["vp"] = road_links["total_flow"] / 24
+
+    # if average hourly flows <= breakpoint flows:
+    road_links["speeds"] = road_links["initial_flow_speeds"]
+    # if average hourly flows > breakpoint flows
     # Motorways
-    road_links[
+    road_links.loc[
         (road_links.combined_label == "M")
         & (road_links.vp > flow_breakpoint_dict["M"]),
         "speeds",
@@ -381,14 +429,14 @@ def speed_flow_func(
         road_links.vp - flow_breakpoint_dict["M"]
     )
     # A roads
-    road_links[
+    road_links.loc[
         (road_links.combined_label == "A_single")
         & (road_links.vp > flow_breakpoint_dict["A_single"]),
         "speeds",
     ] = road_links.initial_flow_speeds - 0.05 * (
         road_links.vp - flow_breakpoint_dict["A_single"]
     )
-    road_links[
+    road_links.loc[
         (road_links.combined_label == "A_dual")
         & (road_links.vp > flow_breakpoint_dict["A_dual"]),
         "speeds",
@@ -396,7 +444,7 @@ def speed_flow_func(
         road_links.vp - flow_breakpoint_dict["A_dual"]
     )
     # B roads
-    road_links[
+    road_links.loc[
         (road_links.combined_label == "B")
         & (road_links.vp > flow_breakpoint_dict["B"]),
         "speeds",
@@ -404,95 +452,8 @@ def speed_flow_func(
         road_links.vp - flow_breakpoint_dict["B"]
     )
     # apply the minimum speed cap
-    road_links["speeds"] = road_links[["speeds", "min_flow_speeds"]].min(axis=1)
-
-    return road_links
-
-
-def speed_flow_func_copy(
-    road_type: str,
-    isurban: int,
-    vp: float,  # edge flow
-    free_flow_speed_dict: Dict[str, float],
-    flow_breakpoint_dict: Dict[str, float],
-    min_speed_cap: Dict[str, float],
-    urban_speed_cap: Dict[str, float],
-) -> Union[float, None]:
-    """Modelling the reduction in average flow speed in response to increased traffic
-    on various road types.
-
-    Parameters
-    ----------
-    road_type: str
-        The column of road type.
-    isUrban: int
-        1: urban, 0: suburban
-    vp: float
-        The average daily flow, cars/day.
-    free_flow_speed_dict: dict
-        The free-flow speeds of different combined road types, mph.
-    min_speed_cap: dict
-        The restriction on the lowest flow rate, mph.
-    urban_speed_cap: dict
-        The restriction on the maximum flow rate in urban areas, mph.
-
-    Returns
-    -------
-    float OR None
-        The average flow rate, mph.
-    """
-    vp = vp / 24  # flows - Motorways, A, B
-    if road_type == "M":
-        free_flow_speed = free_flow_speed_dict["M"]
-        if vp > flow_breakpoint_dict["M"]:
-            vt = max(
-                (free_flow_speed - 0.033 * (vp - flow_breakpoint_dict["M"])),
-                min_speed_cap["M"],
-            )
-            if isurban:
-                return min(urban_speed_cap["M"], vt)
-            else:
-                return vt
-        else:
-            if isurban:
-                return min(urban_speed_cap["M"], free_flow_speed)
-            else:
-                return free_flow_speed
-    elif road_type == "A_single" or road_type == "B":
-        free_flow_speed = free_flow_speed_dict["A_single"]
-        if vp > flow_breakpoint_dict["A_single"]:
-            vt = max(
-                (free_flow_speed - 0.05 * (vp - flow_breakpoint_dict["A_single"])),
-                min_speed_cap["A_single"],
-            )
-            if isurban:
-                return min(urban_speed_cap["A_single"], vt)
-            else:
-                return vt
-        else:
-            if isurban:
-                return min(urban_speed_cap["A_single"], free_flow_speed)
-            else:
-                return free_flow_speed
-    elif road_type == "A_dual":
-        free_flow_speed = free_flow_speed_dict["A_dual"]
-        if vp > flow_breakpoint_dict["A_dual"]:
-            vt = max(
-                (free_flow_speed - 0.033 * (vp - flow_breakpoint_dict["A_dual"])),
-                min_speed_cap["A_dual"],
-            )
-            if isurban:
-                return min(urban_speed_cap["A_dual"], vt)
-            else:
-                return vt
-        else:
-            if isurban:
-                return min(urban_speed_cap["A_dual"], free_flow_speed)
-            else:
-                return free_flow_speed
-    else:
-        print("Please select the road type from [M, A, B]!")
-        return None
+    road_links["speeds"] = road_links[["speeds", "min_flow_speeds"]].max(axis=1)
+    return road_links["speeds"]
 
 
 def create_igraph_network(
@@ -521,7 +482,6 @@ def create_igraph_network(
     """
     nodeList = [(node.id) for _, node in road_nodes.iterrows()]
     edgeIndexList = road_links.index.tolist()
-    breakpoint()
     edgeNameList = road_links.e_id.tolist()
     edgeList = list(zip(road_links.from_id, road_links.to_id))
     edgeLengthList = (
@@ -874,13 +834,6 @@ def network_flow_model(
     od_node_2021: pd.DataFrame,
     max_flow_speed_dict: Dict[str, float] = None,
 ) -> Tuple[
-    Dict[str, float],
-    Dict[str, float],
-    Dict[str, float],
-    Dict[Tuple[str, str], float],
-    Dict[Tuple[str, str], float],
-    Dict[Tuple[str, str], float],
-    Dict[Tuple[str, str], float],
     pd.DataFrame,
     pd.DataFrame,
 ]:
@@ -909,27 +862,28 @@ def network_flow_model(
         The restriction on the lowest flow rate.
     urban_speed_cap: dict
         The restriction on the maximum flow rate in urban areas.
+    od_node_2021: pd.DataFrame
+        The node-based OD flow matrix.
+    max_flow_speed_dict: Dict
+        The maximum vehicle operating speeds.
 
     Returns
     -------
-    acc_speed_dict: dict
-        The updated average flow rate on each road link.
-    acc_flow_dict: dict
-        The accumulated flow amount on each road link.
-    acc_capacity_dict: dict
-        The remaining capacity of each road link.
-    od_voc_dict: dict
-        The vehicle operating costs of each trip.
-    od_vot_dict: dict
-        The value of time of each trip.
-    od_toll_dict: dict
-        The toll costs of each trip.
+    road_links: pd.DataFrame
+        The roak link features with simulating results of edge flows.
+    od_node_2021
+        The OD-based travel component costs.
     isolated_flow_dict: dict
         The isolated trips between each OD pair.
     """
     # initialise road links by adding columns: initial_speeds, acc - flow, capacity, speed
-    road_links = edge_init(
-        road_links, flow_capacity_dict, free_flow_speed_dict, max_flow_speed_dict
+    road_links, initial_speed_dict = edge_init(
+        road_links,
+        flow_capacity_dict,
+        free_flow_speed_dict,
+        urban_speed_cap,
+        min_speed_cap,
+        max_flow_speed_dict,
     )
     # network creation (igraph)
     (
@@ -949,14 +903,6 @@ def network_flow_model(
     operating_cost = 0
     toll_cost = 0
 
-    partial_speed_flow_func = partial(
-        speed_flow_func,
-        free_flow_speed_dict=free_flow_speed_dict,
-        flow_breakpoint_dict=flow_breakpoint_dict,
-        min_speed_cap=min_speed_cap,
-        urban_speed_cap=urban_speed_cap,
-    )
-
     total_remain = sum(sum(values) for values in supply_dict.values())
     print(f"The initial total supply is {total_remain}")
     number_of_edges = len(list(network.es))
@@ -967,7 +913,6 @@ def network_flow_model(
 
     # road link properties
     edge_cbtype_dict = road_links.set_index("e_id")["combined_label"].to_dict()
-    edge_isUrban_dict = road_links.set_index("e_id")["urban"].to_dict()
     edge_length_dict = (
         road_links.set_index("e_id")["geometry"].length * cons.CONV_METER_TO_MILE
     ).to_dict()
@@ -1024,7 +969,7 @@ def network_flow_model(
             ],
         ).explode(["destination", "path", "flow"])
 
-        # compute the total travel cost for each OD trip
+        #!!! compute the total travel cost for each OD trip (time-consuming)
         st = time.time()
         args = []
         args = [row["path"] for _, row in temp_flow_matrix.iterrows()]
@@ -1059,7 +1004,6 @@ def network_flow_model(
         # calculate edge flows
         # [edge_name, flow]
         temp_edge_flow = get_flow_on_edges(temp_flow_matrix, "e_idx", "path", "flow")
-
         # update edge attributes after updating the network structure
         edge_index_to_name = {
             idx: network.es[idx]["edge_name"] for idx in range(len(network.es))
@@ -1070,9 +1014,6 @@ def network_flow_model(
         temp_edge_flow["combined_label"] = temp_edge_flow["e_id"].map(
             edge_cbtype_dict
         )  # combined road type
-        temp_edge_flow["isUrban"] = temp_edge_flow["e_id"].map(
-            edge_isUrban_dict
-        )  # urban/suburban
         temp_edge_flow["temp_acc_flow"] = temp_edge_flow["e_id"].map(
             acc_flow_dict
         )  # flow
@@ -1090,12 +1031,12 @@ def network_flow_model(
             temp_edge_flow["total_flow"] = (
                 temp_edge_flow["flow"] + temp_edge_flow["temp_acc_flow"]
             )
-            temp_edge_flow["speed"] = np.vectorize(
-                partial_speed_flow_func, otypes=None
-            )(
-                temp_edge_flow["combined_label"],
-                temp_edge_flow["isUrban"],
-                temp_edge_flow["total_flow"],
+
+            temp_edge_flow["speed"] = speed_flow_func(
+                temp_edge_flow,
+                flow_breakpoint_dict,
+                initial_speed_dict,
+                min_speed_cap,
             )
             temp_edge_flow["remaining_capacity"] = (
                 temp_edge_flow["temp_acc_capacity"] - temp_edge_flow["flow"]
@@ -1175,10 +1116,8 @@ def network_flow_model(
             temp_edge_flow.temp_acc_flow + temp_edge_flow.adjusted_flow
         )
 
-        temp_edge_flow["speed"] = np.vectorize(partial_speed_flow_func, otypes=None)(
-            temp_edge_flow.combined_label,
-            temp_edge_flow.isUrban,
-            temp_edge_flow.total_flow,
+        temp_edge_flow["speed"] = speed_flow_func(
+            temp_edge_flow, flow_breakpoint_dict, initial_speed_dict, min_speed_cap
         )
         temp_edge_flow["remaining_capacity"] = (
             temp_edge_flow.temp_acc_capacity - temp_edge_flow.adjusted_flow
