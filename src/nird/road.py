@@ -1,7 +1,7 @@
 """ Road Network Flow Model - Functions
 """
 
-from typing import Union, Tuple, List, Dict
+from typing import Tuple, List, Dict
 from collections import defaultdict
 
 import numpy as np
@@ -54,9 +54,9 @@ def select_partial_roads(
     selected_links = pd.concat(selected_links, ignore_index=True)
     selected_links = gpd.GeoDataFrame(selected_links, geometry="geometry")
 
-    selected_links["e_id"] = selected_links.id
-    selected_links["from_id"] = selected_links.start_node
-    selected_links["to_id"] = selected_links.end_node
+    selected_links["e_id"] = selected_links["id"]
+    selected_links["from_id"] = selected_links["start_node"]
+    selected_links["to_id"] = selected_links["end_node"]
 
     # road nodes selection
     sel_node_idx = list(
@@ -65,9 +65,9 @@ def select_partial_roads(
 
     selected_nodes = road_nodes[road_nodes.id.isin(sel_node_idx)]
     selected_nodes.reset_index(drop=True, inplace=True)
-    selected_nodes["nd_id"] = selected_nodes.id
-    selected_nodes["lat"] = selected_nodes.geometry.y
-    selected_nodes["lon"] = selected_nodes.geometry.x
+    selected_nodes["nd_id"] = selected_nodes["id"]
+    selected_nodes["lat"] = selected_nodes["geometry"].y
+    selected_nodes["lon"] = selected_nodes["geometry"].x
 
     return selected_links, selected_nodes
 
@@ -279,7 +279,7 @@ def edge_initial_speed_func(
     urban_flow_speed_dict: Dict[str, float],
     min_flow_speed_dict: Dict[str, float],  # add a minimum speed cap
     max_flow_speed_dict: Dict[str, float] = None,
-) -> Union[pd.DataFrame, Dict[str, float]]:
+) -> Tuple[pd.DataFrame, Dict[str, float]]:
     """Calculate the initial vehicle speed for network edges.
 
     Parameters
@@ -459,7 +459,14 @@ def speed_flow_func(
 def create_igraph_network(
     road_links: gpd.GeoDataFrame,
     road_nodes: gpd.GeoDataFrame,
-) -> Tuple[igraph.Graph, Dict[str, float], Dict[str, float], Dict[str, float]]:
+) -> Tuple[
+    igraph.Graph,
+    Dict[str, float],
+    Dict[str, float],
+    Dict[str, float],
+    Dict[str, float],
+    pd.DataFrame,
+]:
     """Create an undirected igraph network.
 
     Parameters
@@ -775,7 +782,7 @@ def compute_edge_costs(
     return (od_voc, od_vot, od_toll)
 
 
-def clip_to_zero(arr: np.ndarray) -> np.ndarray:
+def clip_to_zero(arr: np.NDArray) -> np.NDArray:
     """Convert values less than one to zero"""
     return np.where(arr >= 0.5, arr, 0)
 
@@ -832,11 +839,8 @@ def network_flow_model(
     min_speed_cap: Dict[str, float],
     urban_speed_cap: Dict[str, float],
     od_node_2021: pd.DataFrame,
-    max_flow_speed_dict: Dict[str, float] = None,
-) -> Tuple[
-    pd.DataFrame,
-    pd.DataFrame,
-]:
+    max_flow_speed_dict=None,
+) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[Tuple[str, str], float]]:
     """Model the passenger flows on the road network.
 
     Parameters
