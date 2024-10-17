@@ -5,6 +5,7 @@
 - Drop the disrupted roads (optional: for disruption analysis)
 """
 
+# %%
 from pathlib import Path
 import pandas as pd
 import geopandas as gpd  # type: ignore
@@ -18,6 +19,7 @@ warnings.simplefilter("ignore")
 
 base_path = Path(load_config()["paths"]["base_path"])
 
+# %%
 # OS open roads
 osoprd_link = gpd.read_parquet(
     base_path / "networks" / "road" / "osoprd_road_links.geoparquet"
@@ -58,6 +60,7 @@ road_link_file.loc[
     road_link_file.road_classification_number == "M6 TOLL", "average_toll_cost"
 ] = 8.0
 
+# %%
 # (optional) drop disrupted roads if necessary (for disruption analysis)
 with open(base_path / "parameters" / "flooded_road_links.json", "r") as f:
     flooded_road_list = json.load(f)
@@ -69,6 +72,7 @@ if user_input == "flooded":
     road_link_file = road_link_file[~road_link_file.e_id.isin(flooded_road_list)]
     road_link_file.reset_index(drop=True, inplace=True)
 
+# %%
 # export road links and nodes
 road_node_file.to_parquet(base_path / "networks" / "road" / "road_node_file.geoparquet")
 road_link_file.to_parquet(base_path / "networks" / "road" / "road_link_file.geoparquet")

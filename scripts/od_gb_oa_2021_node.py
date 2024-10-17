@@ -20,6 +20,14 @@ warnings.simplefilter("ignore")
 incoming_path = Path(load_config()["paths"]["incoming_data"])
 base_path = Path(load_config()["paths"]["base_path"])
 
+
+def convert_to_dict(d):
+    """Convert from defaultdict to dict"""
+    if isinstance(d, defaultdict):
+        d = {k: convert_to_dict(v) for k, v in d.items()}
+    return d
+
+
 # %%
 # UK buildings
 verisk = gpd.read_file(
@@ -119,7 +127,7 @@ for node, v1 in weight_nr.items():
     for oa, list_of_area in v1.items():
         total_area = sum(list_of_area)
         weight_nr2[node][oa] = total_area  # format
-weight_nr3 = func.convert_to_dict(weight_nr2)
+weight_nr3 = convert_to_dict(weight_nr2)
 
 with open(
     base_path / "census_datasets" / "verisk" / "weight_non_residential.pkl",
@@ -143,7 +151,7 @@ for node, v1 in weight_r.items():
     for oa, list_of_area in v1.items():
         total_area = sum(list_of_area)
         weight_r2[node][oa] = total_area
-weight_r3 = func.convert_to_dict(weight_r2)
+weight_r3 = convert_to_dict(weight_r2)
 
 with open(
     base_path / "census_datasets" / "verisk" / "weight_residential.pkl",
@@ -168,7 +176,7 @@ for oa, list_of_nodes in transformed_weight_nr.items():
         p = area / ttArea
         node_weight_nr[oa][node] = round(p, 2)
 
-node_weight_nr = func.convert_to_dict(node_weight_nr)
+node_weight_nr = convert_to_dict(node_weight_nr)
 with open(
     base_path / "census_datasets" / "verisk" / "node_weight_non_residential.pkl",
     "wb",
@@ -192,7 +200,7 @@ for oa, list_of_nodes in transformed_weight_r.items():
         p = area / ttArea
         node_weight_r[oa][node] = round(p, 2)
 
-node_weight_r = func.convert_to_dict(node_weight_r)
+node_weight_r = convert_to_dict(node_weight_r)
 with open(
     base_path / "census_datasets" / "verisk" / "node_weight_residential.pkl",
     "wb",

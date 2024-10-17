@@ -1,6 +1,7 @@
 """Utility functions
 """
 
+import os
 import json
 from collections import defaultdict
 from math import sin, cos, atan2, sqrt, pi
@@ -103,7 +104,11 @@ def extract_gdf_values_containing_nodes(
 def load_config(config_path: Optional[str] = None) -> Dict[str, Dict[str, str]]:
     """Read config.json"""
     if config_path is None:
-        config_path = "config.json"
+        # config_path = "config.json"
+
+        config_path = os.path.join(
+            os.path.dirname(__file__), "..", "..", "..", "config.json"
+        )
 
     with open(config_path, "r") as config_fh:
         config: Dict[str, Dict[str, str]] = json.load(config_fh)
