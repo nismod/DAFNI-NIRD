@@ -40,9 +40,9 @@ def main():
     od_node_2021 = pd.read_csv(
         base_path / "census_datasets" / "od_matrix" / "od_gb_oa_2021_node.csv"
     )
-
-    od_node_2021 = od_node_2021[od_node_2021.Car21 > 1].reset_index(drop=True)
+    # od_node_2021 = od_node_2021[od_node_2021.Car21 > 1].reset_index(drop=True)
     od_node_2021["Car21"] = od_node_2021["Car21"] * 2
+    # od_node_2021 = od_node_2021.head(10)
     print(f"total flows: {od_node_2021.Car21.sum()}")
 
     # generate OD pairs
@@ -72,16 +72,16 @@ def main():
 
     # export files
     road_link_file.to_parquet(
-        base_path.parent / "outputs" / "gb_edge_flows_20241008.geoparquet"
+        base_path.parent / "outputs" / "gb_edge_flows_20241026.geoparquet"
     )
     od_node_2021.to_csv(
-        base_path.parent / "outputs" / "od_costs_20241008.csv", index=False
+        base_path.parent / "outputs" / "od_costs_20241026.csv", index=False
     )
     isolated_od_df = pd.Series(isolated_od_dict).reset_index()
     if isolated_od_df.shape[0] != 0:  # in case of empty df
         isolated_od_df.columns = ["origin_node", "destination_node", "isolated_flows"]
         isolated_od_df.to_csv(
-            base_path.parent / "outputs" / "isolated_od_flows_20241008.csv", index=False
+            base_path.parent / "outputs" / "isolated_od_flows_20241026.csv", index=False
         )
     print(f"The total simulation time: {time.time() - start_time}")
 
