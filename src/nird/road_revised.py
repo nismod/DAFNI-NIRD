@@ -734,6 +734,7 @@ def find_least_cost_path(
 
 
 def compute_edge_costs(
+    edge_weight_df,
     path: List[int],
 ) -> Tuple[float, float, float]:
     """Calculate the total travel cost for the path
@@ -761,7 +762,6 @@ def compute_edge_costs(
     od_toll = edge_weight_df.loc[
         edge_weight_df["edge_name"].isin(path), "edge_toll"
     ].sum()
-
     return (od_voc, od_vot, od_toll)
 
 
@@ -935,7 +935,6 @@ def network_flow_model(
         print(f"No.{iter_flag} iteration starts:")
         # dump the network and edge weight for shared use in multiprocessing
         shared_network_pkl = pickle.dumps(network)
-        shared_weight_pkl = pickle.dumps(edge_compc_df)  # df: edge_name, voc, vot,toll
 
         # find the least-cost for each OD trip
         list_of_spath = []
@@ -955,7 +954,7 @@ def network_flow_model(
             )
         st = time.time()
         with Pool(
-            processes=1,  #!!! update the required number of CPU
+            processes=20,  #!!! update the required number of CPU
             initializer=worker_init_path,
             initargs=(shared_network_pkl,),
         ) as pool:
@@ -974,18 +973,10 @@ def network_flow_model(
         ).explode(["destination", "path", "flow"])
 
         # compute the total travel cost for each OD trip
-        st = time.time()
-        args = []
-        args = [row["path"] for _, row in temp_flow_matrix.iterrows()]
-        with Pool(
-            processes=1,  #!!! update the required number of CPU
-            initializer=worker_init_edge,
-            initargs=(shared_network_pkl, shared_weight_pkl),
-        ) as pool:
-            temp_flow_matrix[["unit_od_voc", "unit_od_vot", "unit_od_toll"]] = pool.map(
-                compute_edge_costs, args
-            )
-        print(f"The computational time for OD costs: {time.time() - st}.")
+        tempFunc = partial(compute_edge_costs, edge_weight_df=edge_compc_df)
+        temp_flow_matrix[["unit_od_voc", "unit_od_vot", "unit_od_toll"]] = (
+            temp_flow_matrix["path"].apply(lambda x: pd.Series(tempFunc(path=x)))
+        )
 
         # save the mid-outputs: origin, destination, path,
         odpfc = pd.concat([odpfc, temp_flow_matrix], axis=0, ignore_index=True)
