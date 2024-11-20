@@ -4,6 +4,7 @@
 - if buildings info is not available, using OA centroids instead
 """
 
+# %%
 from pathlib import Path
 import geopandas as gpd
 import pandas as pd
@@ -44,7 +45,7 @@ uniheight_dict = rule_file.set_index("use")["unit_height_m"].to_dict()
 
 # Roads
 road_node_file = gpd.read_parquet(
-    base_path / "networks" / "road" / "road_node_file.geoparquet"
+    base_path / "networks" / "road" / "osm_road_node_file.geoparquet"
 )  # nd_id
 
 # OA admins (2021)
@@ -61,7 +62,7 @@ od_file.rename(columns={"Car21": "Count21"}, inplace=True)  # 11,143,891 records
 od_file.reset_index(drop=True, inplace=True)
 
 # %%
-# Extract the centroids of UK buildings
+# Extract the centroids of UK buildings (30 min)
 verisk["centroid"] = verisk.geometry.centroid
 verisk_centroids_gdf = verisk.drop(columns=["geometry"]).rename(
     columns={"centroid": "geometry"}
@@ -113,7 +114,7 @@ nonresidential["gross_area_m2"] = nonresidential["gross_area_m2"].astype(int)  #
 
 # %%
 # Estimate the total non-residential area (m2) of each OA
-nearest_node_dict = func.find_least_cost_path(nonresidential, road_node_file)
+nearest_node_dict = func.find_nearest_node(nonresidential, road_node_file)
 weight_nr = defaultdict(lambda: defaultdict(list))  # 4 mins: weight[node][oa] = area
 for zidx in range(nonresidential.shape[0]):
     admin = nonresidential.loc[zidx, "OA21CD"]
@@ -130,15 +131,15 @@ for node, v1 in weight_nr.items():
 weight_nr3 = convert_to_dict(weight_nr2)
 
 with open(
-    base_path / "census_datasets" / "verisk" / "weight_non_residential.pkl",
+    base_path / "census_datasets" / "verisk" / "osm_weight_non_residential.pkl",
     "wb",
 ) as f:
     pickle.dump(weight_nr3, f)
 
 # %%
 # Estimate the total residential area (m2) of each OA
-nearest_node_dict = func.find_least_cost_path(residential, road_node_file)
-weight_r = defaultdict(lambda: defaultdict(list))  # 4 mins: weight[node][oa] = area
+nearest_node_dict = func.find_nearest_node(residential, road_node_file)
+weight_r = defaultdict(lambda: defaultdict(list))  # 40 mins: weight[node][oa] = area
 for zidx in range(residential.shape[0]):
     admin = residential.loc[zidx, "OA21CD"]
     area = residential.loc[zidx, "gross_area_m2"]
@@ -154,7 +155,7 @@ for node, v1 in weight_r.items():
 weight_r3 = convert_to_dict(weight_r2)
 
 with open(
-    base_path / "census_datasets" / "verisk" / "weight_residential.pkl",
+    base_path / "census_datasets" / "verisk" / "osm_weight_residential.pkl",
     "wb",
 ) as f:
     pickle.dump(weight_r3, f)
@@ -178,7 +179,7 @@ for oa, list_of_nodes in transformed_weight_nr.items():
 
 node_weight_nr = convert_to_dict(node_weight_nr)
 with open(
-    base_path / "census_datasets" / "verisk" / "node_weight_non_residential.pkl",
+    base_path / "census_datasets" / "verisk" / "osm_node_weight_non_residential.pkl",
     "wb",
 ) as f:
     pickle.dump(node_weight_nr, f)
@@ -202,7 +203,7 @@ for oa, list_of_nodes in transformed_weight_r.items():
 
 node_weight_r = convert_to_dict(node_weight_r)
 with open(
-    base_path / "census_datasets" / "verisk" / "node_weight_residential.pkl",
+    base_path / "census_datasets" / "verisk" / "osm_node_weight_residential.pkl",
     "wb",
 ) as f:
     pickle.dump(node_weight_r, f)
@@ -213,7 +214,7 @@ For OAs without residential buildings, trip origins were approximated using the 
 Similarly, for OAs without nonresidential buildings, trip destinations were approximated using the OA centroids.
 """
 # find the nearest node for each OA centroid (build the reference dict)
-nearest_node_dict = func.find_least_cost_path(admin_file, road_node_file)
+nearest_node_dict = func.find_nearest_node(admin_file, road_node_file)
 zone_to_node = {}
 for zidx in range(admin_file.shape[0]):
     z = admin_file.loc[zidx, "OA21CD"]
@@ -260,14 +261,16 @@ for idx, row in tqdm(od_file.iterrows(), desc="Processing:", total=od_file.shape
         destinations.append(selected_destination_node)
         counts.append(1)
 
+# %%
 temp_df = pd.DataFrame(
-    {"origin_node": origins, "destination_node": destinations, "count": counts}
+    {"origin_node": origins, "destination_node": destinations, "Car21": counts}
 )
 temp_df_group = temp_df.groupby(
     by=["origin_node", "destination_node"], as_index=False
-).agg({"count": sum})
+).agg({"Car21": sum})
 
 # %%
 temp_df_group.to_csv(
-    base_path / "census_datasets" / "od_matrix" / "od_gb_oa_2021_node.csv", index=False
+    base_path / "census_datasets" / "od_matrix" / "osm_od_gb_oa_2021_node.csv",
+    index=False,
 )
