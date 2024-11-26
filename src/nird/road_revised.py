@@ -47,33 +47,30 @@ def select_partial_roads(
     selected_nodes: gpd.GeoDataFrame
         Partial road nodes.
     """
-    selected_links = []
     # road links selection
-    for ci in list_of_values:
-        selected_links.append(road_links[road_links[col_name] == ci])
-
-    selected_links = pd.concat(selected_links, ignore_index=True)
-    selected_links = gpd.GeoDataFrame(selected_links, geometry="geometry")
-
-    selected_links["e_id"] = selected_links["id"]
-    selected_links["from_id"] = selected_links["start_node"]
-    selected_links["to_id"] = selected_links["end_node"]
-
+    selected_links = road_links[road_links[col_name].isin(list_of_values)].reset_index(
+        drop=True
+    )
+    selected_links.rename(
+        columns={"id": "e_id", "start_node": "from_id", "end_node": "to_id"},
+        inplace=True,
+    )
     # road nodes selection
     sel_node_idx = list(
-        set(selected_links.start_node.tolist() + selected_links.end_node.tolist())
+        set(selected_links.from_id.tolist() + selected_links.to_id.tolist())
     )
-
     selected_nodes = road_nodes[road_nodes.id.isin(sel_node_idx)]
     selected_nodes.reset_index(drop=True, inplace=True)
-    selected_nodes["nd_id"] = selected_nodes["id"]
+    selected_nodes.rename(columns={"id": "nd_id"}, inplace=True)
     selected_nodes["lat"] = selected_nodes["geometry"].y
     selected_nodes["lon"] = selected_nodes["geometry"].x
 
     return selected_links, selected_nodes
 
 
-def create_urban_mask(etisplus_urban_roads: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+def create_urban_mask(
+    etisplus_urban_roads: gpd.GeoDataFrame,
+) -> gpd.GeoDataFrame:
     """To extract urban areas across Great Britain (GB) based on ETISPLUS datasets.
 
     Parameters
@@ -135,7 +132,10 @@ def label_urban_roads(
 
 
 def find_nearest_node(
-    zones: gpd.GeoDataFrame, road_nodes: gpd.GeoDataFrame
+    zones: gpd.GeoDataFrame,
+    road_nodes: gpd.GeoDataFrame,
+    zone_id_column: str,
+    node_id_column: str,
 ) -> Dict[str, str]:
     """Find the nearest road node for each admin unit.
 
@@ -151,63 +151,17 @@ def find_nearest_node(
     nearest_node_dict: dict
         A dictionary to convert from admin units to their attached road nodes.
     """
-    nearest_node_dict = {}
-    for zidx, z in zones.iterrows():
-        closest_road_node = road_nodes.sindex.nearest(z.geometry, return_all=False)[1][
-            0
-        ]
-        # for the first [x]:
-        #   [0] represents the index of geometry;
-        #   [1] represents the index of gdf
-        # the second [x] represents the No. of closest item in the returned list,
-        #   which only return one nearest node in this case
-        nearest_node_dict[zidx] = closest_road_node
-
+    nearest_nodes = gpd.sjoin_nearest(zones, road_nodes)
+    nearest_nodes = nearest_nodes.drop_duplicates(subset=[zone_id_column], keep="first")
+    nearest_node_dict = dict(
+        zip(nearest_nodes[zone_id_column], nearest_nodes[node_id_column])
+    )
     return nearest_node_dict  # zone_idx: node_idx
 
 
-def extract_od_pairs(
-    od: pd.DataFrame,
-) -> Tuple[List[str], Dict[str, List[str]], Dict[str, List[int]]]:
-    """Prepare the OD matrix.
-
-    Parameters
-    ----------
-    od: pd.DataFrame
-        Table of origin-destination passenger flows.
-
-    Returns
-    -------
-    list_of_origin_nodes: list
-        A list of origin nodes.
-    dict_of_destination_nodes: dict[str, list[str]]
-        A dictionary recording a list of destination nodes for each origin node.
-    dict_of_origin_supplies: dict[str, list[int]]
-        A dictionary recording a list of flows for each origin-destination pair.
-    """
-    list_of_origin_nodes = []
-    dict_of_destination_nodes: Dict[str, List[str]] = defaultdict(list)
-    dict_of_origin_supplies: Dict[str, List[float]] = defaultdict(list)
-    for _, row in od.iterrows():
-        from_node = row["origin_node"]
-        to_node = row["destination_node"]
-        Count: float = row["Car21"]
-        list_of_origin_nodes.append(from_node)  # [nd_id...]
-        dict_of_destination_nodes[from_node].append(to_node)  # {nd_id: [nd_id...]}
-        dict_of_origin_supplies[from_node].append(Count)  # {nd_id: [car21...]}
-
-    # Extract identical origin nodes
-    list_of_origin_nodes = list(set(list_of_origin_nodes))
-    list_of_origin_nodes.sort()
-
-    return (
-        list_of_origin_nodes,
-        dict_of_destination_nodes,
-        dict_of_origin_supplies,
-    )
-
-
-def voc_func(speed: float) -> float:
+def voc_func(
+    speed: float,
+) -> float:
     """Calculate the Vehicle Operating Cost (VOC).
 
     Parameters
@@ -261,7 +215,9 @@ def cost_func(
     return cost, c_time, c_operate
 
 
-def edge_reclassification_func(road_links: pd.DataFrame) -> pd.DataFrame:
+def edge_reclassification_func(
+    road_links: pd.DataFrame,
+) -> pd.DataFrame:
     """Reclassify network edges to "M, A_dual, A_single, B"."""
     road_links["combined_label"] = "A_dual"
     road_links.loc[road_links.road_classification == "Motorway", "combined_label"] = "M"
@@ -307,7 +263,13 @@ def edge_initial_speed_func(
     assert "combined_label" in road_links.columns, "combined_label column not exists!"
     assert "urban" in road_links.columns, "urban column not exists!"
 
-    road_links["free_flow_speeds"] = road_links.combined_label.map(free_flow_speed_dict)
+    if (
+        "free_flow_speeds" not in road_links.columns
+    ):  # add free-flow speeds if not exist
+        road_links["free_flow_speeds"] = road_links.combined_label.map(
+            free_flow_speed_dict
+        )
+
     road_links.loc[road_links["urban"] == 1, "free_flow_speeds"] = road_links[
         "combined_label"
     ].map(
@@ -381,7 +343,11 @@ def edge_init(
     # edge flows (cars/day)
     road_links["acc_flow"] = 0.0
     # edge capacities (cars/day)
-    road_links["acc_capacity"] = road_links["combined_label"].map(initial_capacity_dict)
+    # road_links["acc_capacity"] = road_links["combined_label"].map(initial_capacity_dict)
+    breakpoint()
+    road_links["acc_capacity"] = (
+        road_links.combined_label.map(initial_capacity_dict) * road_links.lanes * 24
+    )
     # average flow speeds (mph)
     road_links["acc_speed"] = road_links["initial_flow_speeds"]
 
@@ -464,7 +430,7 @@ def create_igraph_network(
     edge_operatecost_dict,
         The fuel cost of each edge.
     """
-    nodeList = [(node.id) for _, node in road_nodes.iterrows()]
+    nodeList = [(node.nd_id) for _, node in road_nodes.iterrows()]
     edgeNameList = road_links["e_id"].tolist()
     edgeList = list(zip(road_links.from_id, road_links.to_id))
     edgeLengthList = (
@@ -511,77 +477,6 @@ def create_igraph_network(
         edge_operatecost_dict,
         edge_toll_dict,
         edge_compc_df,
-    )
-
-
-def update_od_matrix(
-    temp_flow_matrix: pd.DataFrame,
-    supply_dict: Dict[str, List[float]],
-    destination_dict: Dict[str, List[str]],
-    isolated_flow_dict: Dict[Tuple[str, str], float],
-) -> Tuple[
-    pd.DataFrame,
-    List[str],
-    Dict[str, List[float]],
-    Dict[str, List[str]],
-]:
-    """Update the OD matrix by removing unreachable desitinations from each origin;
-    and origins with zero supplies.
-
-    Parameters
-    ----------
-    temp_flow_matrix: pd.DataFrame
-        A temporary flow matrix: [origins, destinations, paths, flows]
-    supply_dict: dict
-        The number of outbound trips from each origin.
-    destination_dict: dict
-        A list of destinations attached to each origin.
-    isolated_flow_dict: dict
-        The number of isolated trips between each OD pair.
-
-    Returns
-    -------
-    temp_flow_matrix: pd.DataFrame
-    new_list_of_origins: list
-    new_supply_dict: dict
-    new_destination: dict
-    """
-    # drop the OD trips with no accessible route ("path = []")
-    # drop destinations with no accessible route from each origin
-    temp_df = temp_flow_matrix[temp_flow_matrix["path"].apply(lambda x: len(x) == 0)]
-    print(f"Non_allocated_flow: {temp_df.flow.sum()}")
-    for _, row in temp_df.iterrows():
-        origin_temp = row["origin"]
-        destination_temp = row["destination"]
-        flow_temp = row["flow"]
-        isolated_flow_dict[(origin_temp, destination_temp)] += flow_temp
-        idx_temp = destination_dict[origin_temp].index(destination_temp)
-        destination_dict[origin_temp].remove(destination_temp)
-        del supply_dict[origin_temp][idx_temp]
-
-    # drop origins of which all trips have been sent to the network
-    new_supply_dict = {}
-    new_destination_dict = {}
-    new_list_of_origins = []
-    for origin, list_of_counts in supply_dict.items():
-        tt_supply = sum(list_of_counts)
-        if tt_supply > 0:
-            new_list_of_origins.append(origin)
-            new_counts = [od_flow for od_flow in list_of_counts if od_flow != 0]
-            new_supply_dict[origin] = new_counts
-            new_destination_dict[origin] = [
-                dest
-                for idx, dest in enumerate(destination_dict[origin])
-                if list_of_counts[idx] != 0
-            ]
-    temp_flow_matrix = temp_flow_matrix[
-        temp_flow_matrix["path"].apply(lambda x: len(x) != 0)
-    ]
-    return (
-        temp_flow_matrix,
-        new_list_of_origins,
-        new_supply_dict,
-        new_destination_dict,
     )
 
 
@@ -686,6 +581,118 @@ def update_network_structure(
     )
 
 
+def extract_od_pairs(
+    od: pd.DataFrame,
+) -> Tuple[List[str], Dict[str, List[str]], Dict[str, List[int]]]:
+    """Prepare the OD matrix.
+
+    Parameters
+    ----------
+    od: pd.DataFrame
+        Table of origin-destination passenger flows.
+
+    Returns
+    -------
+    list_of_origin_nodes: list
+        A list of origin nodes.
+    dict_of_destination_nodes: dict[str, list[str]]
+        A dictionary recording a list of destination nodes for each origin node.
+    dict_of_origin_supplies: dict[str, list[int]]
+        A dictionary recording a list of flows for each origin-destination pair.
+    """
+    list_of_origin_nodes = []
+    dict_of_destination_nodes: Dict[str, List[str]] = defaultdict(list)
+    dict_of_origin_supplies: Dict[str, List[float]] = defaultdict(list)
+    for _, row in od.iterrows():
+        from_node = row["origin_node"]
+        to_node = row["destination_node"]
+        Count: float = row["Car21"]
+        list_of_origin_nodes.append(from_node)  # [nd_id...]
+        dict_of_destination_nodes[from_node].append(to_node)  # {nd_id: [nd_id...]}
+        dict_of_origin_supplies[from_node].append(Count)  # {nd_id: [car21...]}
+
+    # Extract identical origin nodes
+    list_of_origin_nodes = list(set(list_of_origin_nodes))
+    list_of_origin_nodes.sort()
+
+    return (
+        list_of_origin_nodes,
+        dict_of_destination_nodes,
+        dict_of_origin_supplies,
+    )
+
+
+def update_od_matrix(
+    temp_flow_matrix: pd.DataFrame,
+    supply_dict: Dict[str, List[float]],
+    destination_dict: Dict[str, List[str]],
+    isolated_flow_dict: Dict[Tuple[str, str], float],
+) -> Tuple[
+    pd.DataFrame,
+    List[str],
+    Dict[str, List[float]],
+    Dict[str, List[str]],
+]:
+    """Update the OD matrix by removing unreachable desitinations from each origin;
+    and origins with zero supplies.
+
+    Parameters
+    ----------
+    temp_flow_matrix: pd.DataFrame
+        A temporary flow matrix: [origins, destinations, paths, flows]
+    supply_dict: dict
+        The number of outbound trips from each origin.
+    destination_dict: dict
+        A list of destinations attached to each origin.
+    isolated_flow_dict: dict
+        The number of isolated trips between each OD pair.
+
+    Returns
+    -------
+    temp_flow_matrix: pd.DataFrame
+    new_list_of_origins: list
+    new_supply_dict: dict
+    new_destination: dict
+    """
+    # drop the OD trips with no accessible route ("path = []")
+    # drop destinations with no accessible route from each origin
+    temp_df = temp_flow_matrix[temp_flow_matrix["path"].apply(lambda x: len(x) == 0)]
+    print(f"Non_allocated_flow: {temp_df.flow.sum()}")
+    for _, row in temp_df.iterrows():
+        origin_temp = row["origin"]
+        destination_temp = row["destination"]
+        flow_temp = row["flow"]
+        isolated_flow_dict[(origin_temp, destination_temp)] += flow_temp
+        idx_temp = destination_dict[origin_temp].index(destination_temp)
+        destination_dict[origin_temp].remove(destination_temp)
+        del supply_dict[origin_temp][idx_temp]
+
+    # drop origins of which all trips have been sent to the network
+    new_supply_dict = {}
+    new_destination_dict = {}
+    new_list_of_origins = []
+    for origin, list_of_counts in supply_dict.items():
+        tt_supply = sum(list_of_counts)
+        if tt_supply > 0:
+            new_list_of_origins.append(origin)
+            new_counts = [od_flow for od_flow in list_of_counts if od_flow != 0]
+            new_supply_dict[origin] = new_counts
+            new_destination_dict[origin] = [
+                dest
+                for idx, dest in enumerate(destination_dict[origin])
+                if list_of_counts[idx] != 0
+            ]
+    temp_flow_matrix = temp_flow_matrix[
+        temp_flow_matrix["path"].apply(lambda x: len(x) != 0)
+    ]
+    return (
+        temp_flow_matrix,
+        new_list_of_origins,
+        new_supply_dict,
+        new_destination_dict,
+    )
+
+
 def find_least_cost_path(
     params: Tuple,
 ) -> Tuple[int, List[str], List[int], List[float]]:
@@ -734,7 +741,7 @@ def find_least_cost_path(
 
 
 def compute_edge_costs(
-    edge_weight_df,
+    # edge_weight_df,
     path: List[int],
 ) -> Tuple[float, float, float]:
     """Calculate the total travel cost for the path
@@ -765,12 +772,16 @@ def compute_edge_costs(
     return (od_voc, od_vot, od_toll)
 
 
-def clip_to_zero(arr: np.ndarray) -> np.ndarray:
+def clip_to_zero(
+    arr: np.ndarray,
+) -> np.ndarray:
     """Convert flows less than 0.5 to 0"""
     return np.where(arr >= 0.5, arr, 0)
 
 
-def worker_init_path(shared_network_pkl: bytes) -> None:
+def worker_init_path(
+    shared_network_pkl: bytes,
+) -> None:
     """Worker initialisation in multiprocesses to create a shared network
     that could be used across different workers.
 
@@ -788,7 +799,10 @@ def worker_init_path(shared_network_pkl: bytes) -> None:
     return None
 
 
-def worker_init_edge(shared_network_pkl: bytes, shared_weight_pkl: bytes) -> None:
+def worker_init_edge(
+    shared_network_pkl: bytes,
+    shared_weight_pkl: bytes,
+) -> None:
     """Worker initialisation in multiprocesses to create a shared network
     that could be used across different workers.
 
@@ -935,8 +949,9 @@ def network_flow_model(
         print(f"No.{iter_flag} iteration starts:")
         # dump the network and edge weight for shared use in multiprocessing
         shared_network_pkl = pickle.dumps(network)
+        shared_weight_pkl = pickle.dumps(edge_compc_df)
 
-        # find the least-cost for each OD trip
+        # find the least-cost path for each OD trip
         list_of_spath = []
         args = []
         for i in range(len(list_of_origins)):
@@ -954,7 +969,7 @@ def network_flow_model(
             )
         st = time.time()
         with Pool(
-            processes=20,  #!!! update the required number of CPU
+            processes=1,
             initializer=worker_init_path,
             initargs=(shared_network_pkl,),
         ) as pool:
@@ -972,11 +987,27 @@ def network_flow_model(
             ],
         ).explode(["destination", "path", "flow"])
 
-        # compute the total travel cost for each OD trip
+        # method1: compute cost matrix for od trips
+        st = time.time()
+        args = []
+        args = [row["path"] for _, row in temp_flow_matrix.iterrows()]
+        with Pool(
+            processes=1,
+            initializer=worker_init_edge,
+            initargs=(shared_network_pkl, shared_weight_pkl),
+        ) as pool:
+            temp_flow_matrix[["unit_od_voc", "unit_od_vot", "unit_od_toll"]] = pool.map(
+                compute_edge_costs, args
+            )
+        print(f"The computational time for OD costs: {time.time() - st}.")
+
+        """
+        # method2: compute cost matrix for od trips
         tempFunc = partial(compute_edge_costs, edge_weight_df=edge_compc_df)
         temp_flow_matrix[["unit_od_voc", "unit_od_vot", "unit_od_toll"]] = (
             temp_flow_matrix["path"].apply(lambda x: pd.Series(tempFunc(path=x)))
         )
+        """
 
         # save the mid-outputs: origin, destination, path,
         odpfc = pd.concat([odpfc, temp_flow_matrix], axis=0, ignore_index=True)
@@ -1102,7 +1133,7 @@ def network_flow_model(
             print("Error: existing network has zero-capacity links!")
             break
         if r >= 1:
-            print("Error: r >= 1!")
+            print("Error: r >= 1")
             break
         print(f"r = {r}")
 
