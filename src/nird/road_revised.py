@@ -1307,6 +1307,8 @@ def network_flow_model(
     time_equiv_cost = 0
     operating_cost = 0
     toll_cost = 0
+    odpfc = []
+    isolation = []
 
     total_remain = remain_od.Car21.sum()
     print(f"The initial supply is {total_remain}")
@@ -1321,35 +1323,58 @@ def network_flow_model(
     # starts
     iter_flag = 1
     # isolated_flow_dict = defaultdict(float)
-    odpfc = pd.DataFrame(
-        columns=[
-            "origin",
-            "destination",
-            "path",
-            "flow",
-            "unit_od_voc",
-            "unit_od_vot",
-            "unit_od_toll",
-        ]
-    )
-    isolation = pd.DataFrame(columns=["origin", "destination", "flow"])
+    # odpfc = pd.DataFrame(
+    #     columns=[
+    #         "origin",
+    #         "destination",
+    #         "path",
+    #         "flow",
+    #         "unit_od_voc",
+    #         "unit_od_vot",
+    #         "unit_od_toll",
+    #     ]
+    # )
+    # isolation = pd.DataFrame(columns=["origin", "destination", "flow"])
 
     while total_remain > 0:
+        graph_nodes = [x["name"] for x in network.vs]
+        isolation.append(
+            remain_od[
+                ~(
+                    (remain_od["origin_node"].isin(graph_nodes))
+                    & (remain_od["destination_node"].isin(graph_nodes))
+                )
+            ]
+        )
+        remain_od = remain_od[
+            (remain_od["origin_node"].isin(graph_nodes))
+            & (remain_od["destination_node"].isin(graph_nodes))
+        ]
         print(f"No.{iter_flag} iteration starts:")
         # dump the network and edge weight for shared use in multiprocessing
+        if len(remain_od.index) <= 0:
+            break
         shared_network_pkl = pickle.dumps(network)
-        shared_weight_pkl = pickle.dumps(road_links)
+        # shared_weight_pkl = pickle.dumps(road_links)
 
         # find the least-cost path for each OD trip
         list_of_spath = []
         args = []
-        for row in remain_od.itertuples():
-            origin = row.origin_node
-            destination_nodes = remain_od.loc[
-                remain_od.origin_node == origin, "destination_node"
-            ].tolist()
+
+        list_of_origin_nodes = list(set(remain_od["origin_node"].values.tolist()))
+        remain_od = remain_od.set_index("origin_node")
+        for origin in list_of_origin_nodes:
+            destinations = remain_od.loc[[origin], "destination_node"].values.tolist()
             flows = remain_od.loc[remain_od.origin_node == origin, "Car21"].tolist()
-            args.append((origin, destination_nodes, flows))
+            args.appped((origin, destinations, flows))
+        remain_od = remain_od.reset_index()
+        # for row in remain_od.itertuples():
+        #     origin = row.origin_node
+        #     destination_nodes = remain_od.loc[
+        #         remain_od.origin_node == origin, "destination_node"
+        #     ].tolist()
+        #     flows = remain_od.loc[remain_od.origin_node == origin, "Car21"].tolist()
+        #     args.append((origin, destination_nodes, flows))
 
         st = time.time()
         with Pool(
@@ -1364,38 +1389,60 @@ def network_flow_model(
         temp_flow_matrix = pd.DataFrame(
             list_of_spath,
             columns=[
-                "origin",
-                "destination",
+                "origin_node",
+                "destination_node",
                 "path",
+                "unit_od_voc",
+                "unit_od_vot",
+                "unit_od_toll",
                 "flow",
             ],
-        ).explode(["destination", "path", "flow"])
+        ).explode(
+            [
+                "destination_node",
+                "path",
+                "unit_od_voc",
+                "unit_od_vot",
+                "unit_od_toll",
+                "flow",
+            ]
+        )
+
+        # temp_flow_matrix = pd.DataFrame(
+        #     list_of_spath,
+        #     columns=[
+        #         "origin",
+        #         "destination",
+        #         "path",
+        #         "flow",
+        #     ],
+        # ).explode(["destination", "path", "flow"])
 
         # Compute cost matrix for od trips
-        st = time.time()
-        args = []
-        args = [row.path for row in temp_flow_matrix.itertuples()]
-        with Pool(
-            processes=1,
-            initializer=worker_init_edge,
-            initargs=(shared_network_pkl, shared_weight_pkl),
-        ) as pool:
-            temp_flow_matrix[["unit_od_voc", "unit_od_vot", "unit_od_toll"]] = pool.map(
-                compute_edge_costs, args
-            )
-        print(f"The computational time for OD costs: {time.time() - st}.")
+        # st = time.time()
+        # args = []
+        # args = [row.path for row in temp_flow_matrix.itertuples()]
+        # with Pool(
+        #     processes=1,
+        #     initializer=worker_init_edge,
+        #     initargs=(shared_network_pkl, shared_weight_pkl),
+        # ) as pool:
+        #     temp_flow_matrix[["unit_od_voc", "unit_od_vot", "unit_od_toll"]] = pool.map(
+        #         compute_edge_costs, args
+        #     )
+        # print(f"The computational time for OD costs: {time.time() - st}.")
 
         # save the mid-outputs: origin, destination, path,
-        odpfc = pd.concat([odpfc, temp_flow_matrix], axis=0, ignore_index=True)
-        odpfc.path = odpfc.path.apply(tuple)
-        odpfc = odpfc.groupby(["origin", "destination", "path"], as_index=False).agg(
-            {
-                "flow": "sum",
-                "unit_od_voc": "first",  # vehicle operational cost (per trip)
-                "unit_od_vot": "first",  # value of time (per trip)
-                "unit_od_toll": "first",  # toll cost (per trip)
-            }
-        )
+        # odpfc = pd.concat([odpfc, temp_flow_matrix], axis=0, ignore_index=True)
+        # odpfc.path = odpfc.path.apply(tuple)
+        # odpfc = odpfc.groupby(["origin", "destination", "path"], as_index=False).agg(
+        #     {
+        #         "flow": "sum",
+        #         "unit_od_voc": "first",  # vehicle operational cost (per trip)
+        #         "unit_od_vot": "first",  # value of time (per trip)
+        #         "unit_od_toll": "first",  # toll cost (per trip)
+        #     }
+        # )
 
         # calculate the non-allocated flows and remaining flows
         (
@@ -1405,13 +1452,15 @@ def network_flow_model(
         ) = update_od_matrix(temp_flow_matrix, remain_od)
 
         # update the isolated flows
-        isolation = (
-            pd.concat(
-                [isolation, isolated_flow_matrix[["origin", "destination", "flow"]]]
-            )
-            .groupby(by=["origin", "destination"])
-            .agg({"flow": sum})
-        )
+        # isolation = (
+        #     pd.concat(
+        #         [isolation, isolated_flow_matrix[["origin", "destination", "flow"]]]
+        #     )
+        #     .groupby(by=["origin", "destination"])
+        #     .agg({"flow": sum})
+        # )
+        odpfc.append(remain_od)
+        isolation.appennd(isolated_flow_matrix)
 
         # calculate the remaining flows
         number_of_origins = remain_od.origin_node.unique().shape[0]
