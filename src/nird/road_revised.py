@@ -344,7 +344,7 @@ def edge_init(
     road_links["acc_flow"] = 0.0
     # edge capacities (cars/day)
     # road_links["acc_capacity"] = road_links["combined_label"].map(initial_capacity_dict)
-    breakpoint()
+
     road_links["acc_capacity"] = (
         road_links.combined_label.map(initial_capacity_dict) * road_links.lanes * 24
     )
@@ -582,14 +582,19 @@ def update_network_structure_copy(
 
 
 def create_igraph_network(road_links):
-    road_links["edge_length_m"] = road_links.geometry.length * cons.CONV_METER_TO_MILE
-    road_links["time_hr"] = 1.0 * road_links.edge_length_m / road_links.acc_speed
+    road_links["edge_length_mile"] = (
+        road_links.geometry.length * cons.CONV_METER_TO_MILE
+    )
+    road_links["time_hr"] = 1.0 * road_links.edge_length_mile / road_links.acc_speed
     road_links["voc"] = np.vectorize(voc_func, otypes=None)(road_links.acc_speed)
-    road_links[["weight", "time_cost", "operating_cost"]] = np.vectorize(
-        cost_func, otypes=None
-    )(
+
+    (
+        road_links["weight"],
+        road_links["time_cost"],
+        road_links["operating_cost"],
+    ) = np.vectorize(cost_func, otypes=None)(
         road_links["time_hr"],
-        road_links["edge_length_m"],
+        road_links["edge_length_mile"],
         road_links["voc"],
         road_links["average_toll_cost"],
     )
@@ -599,6 +604,7 @@ def create_igraph_network(road_links):
         edge_attrs=list(graph_df.columns)[2:],
         directed=False,
     )
+
     return network, road_links
 
 
@@ -673,7 +679,7 @@ def update_od_matrix(
     isolated_flow_matrix = temp_flow_matrix[mask]
     print(f"Non_allocated_flow: {isolated_flow_matrix.flow.sum()}")
     temp_flow_matrix = temp_flow_matrix[~mask]
-    remain_origins = temp_flow_matrix.orgin.unique().tolist()
+    remain_origins = temp_flow_matrix.origin.unique().tolist()
     remain_destinations = temp_flow_matrix.destination.unique().tolist()
     remain_od = remain_od[
         (
@@ -1343,7 +1349,7 @@ def network_flow_model(
                 remain_od.origin_node == origin, "destination_node"
             ].tolist()
             flows = remain_od.loc[remain_od.origin_node == origin, "Car21"].tolist()
-            args.append(origin, destination_nodes, flows)
+            args.append((origin, destination_nodes, flows))
 
         st = time.time()
         with Pool(
@@ -1368,7 +1374,7 @@ def network_flow_model(
         # Compute cost matrix for od trips
         st = time.time()
         args = []
-        args = [row.path for _, row in temp_flow_matrix.itertuples()]
+        args = [row.path for row in temp_flow_matrix.itertuples()]
         with Pool(
             processes=1,
             initializer=worker_init_edge,
@@ -1401,17 +1407,19 @@ def network_flow_model(
         # update the isolated flows
         isolation = (
             pd.concat(
-                isolation, isolated_flow_matrix[["origin", "destination", "flow"]]
+                [isolation, isolated_flow_matrix[["origin", "destination", "flow"]]]
             )
             .groupby(by=["origin", "destination"])
             .agg({"flow": sum})
         )
+
         # calculate the remaining flows
         number_of_origins = remain_od.origin_node.unique().shape[0]
         number_of_destinations = remain_od.destination_node.unique().shape[0]
-        print(f"The remaining number of origins: {len(number_of_origins)}")
+        print(f"The remaining number of origins: {number_of_origins}")
         print(f"The remaining number of destinations: {number_of_destinations}")
         total_remain = remain_od.Car21.sum()
+
         if total_remain == 0:
             print("Iteration stops: there is no remaining flows!")
             break
@@ -1437,7 +1445,7 @@ def network_flow_model(
         )
 
         temp_edge_flow["est_overflow"] = (
-            temp_edge_flow["flow"] - temp_edge_flow["temp_acc_capacity"]
+            temp_edge_flow["flow"] - temp_edge_flow["acc_capacity"]
         )  # estimated overflow: positive -> has overflow
         max_overflow = temp_edge_flow["est_overflow"].max()
         print(f"The maximum amount of edge overflow: {max_overflow}")
@@ -1452,7 +1460,7 @@ def network_flow_model(
             )
             temp_edge_flow["acc_speed"] = np.vectorize(partial_speed_flow_func)(
                 temp_edge_flow["combined_label"],
-                temp_edge_flow["total_flow"],
+                temp_edge_flow["acc_flow"],
                 temp_edge_flow["initial_flow_speeds"],
                 temp_edge_flow["min_flow_speeds"],
             )
