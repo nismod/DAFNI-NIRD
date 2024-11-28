@@ -30,55 +30,66 @@ def main():
     with open(base_path / "parameters" / "urban_speed_cap.json", "r") as f:
         urban_speed_dict = json.load(f)
 
-    # road networks (urban_filter: mannual correction)
-    road_node_file = gpd.read_parquet(
-        base_path / "demo" / "inputs" / "road_node_file.geoparquet"
-    )
+    # network links
     road_link_file = gpd.read_parquet(
-        base_path / "demo" / "inputs" / "road_link_file_lanes.geoparquet"
+        base_path / "networks" / "road" / "GB_road_link_file.geoparquet"
     )  # road links with "lanes" info
 
-    # O-D matrix (2021)
-    od_node_2021 = pd.read_csv(base_path / "demo" / "inputs" / "demo_od.csv")
+    # od matrix (2021)
+    od_node_2021 = pd.read_csv(
+        base_path / "census_datasets" / "od_matrix" / "od_gb_oa_2021_node.csv"
+    )
+    # od_node_2021 = od_node_2021[od_node_2021.Car21 > 1].reset_index(drop=True)
     od_node_2021["Car21"] = od_node_2021["Car21"] * 2
-    # od_node_2021 = od_node_2021.head(1000)
+    od_node_2021 = od_node_2021.head(100000)
     print(f"total flows: {od_node_2021.Car21.sum()}")
 
-    # generate OD pairs
-    list_of_origin_nodes, dict_of_destination_nodes, dict_of_origin_supplies = (
-        func.extract_od_pairs(od_node_2021)
+    # create igraph network
+    road_links = func.edge_init(
+        road_link_file,
+        flow_capacity_dict,
+        free_flow_speed_dict,
+        urban_speed_dict,
+        min_speed_dict,
+        max_flow_speed_dict=None,
+    )
+    network, road_links = func.create_igraph_network(road_links)
+
+    # run flow simulation
+    road_links, isolation, odpfc = func.network_flow_model(
+        road_links, network, od_node_2021, flow_breakpoint_dict
+    )
+    odpfc = pd.DataFrame(
+        odpfc,
+        columns=[
+            "origin_node",
+            "destination_node",
+            "path",
+            "flow",
+            "operating_cost",
+            "time_cost",
+            "toll_cost",
+        ],
     )
 
-    # flow simulation
-    (
-        road_link_file,  # edge flow results
-        isolated_od_dict,  # isolated trips
-        odpfc,  # origin-destination-path-cost matrix
-    ) = func.network_flow_model(
-        road_link_file,  # road
-        road_node_file,  # road
-        list_of_origin_nodes,  # od
-        dict_of_origin_supplies,  # od
-        dict_of_destination_nodes,  # od
-        free_flow_speed_dict,  # net
-        flow_breakpoint_dict,  # net -> [m, a-trunk and bridge, a-primary and secondary]
-        flow_capacity_dict,  # net
-        min_speed_dict,  # net
-        urban_speed_dict,  # net
-        max_flow_speed_dict=None,  # disruption analysis
+    isolation = pd.DataFrame(
+        isolation,
+        columns=[
+            "origin_node",
+            "destination_node",
+            "path",
+            "flow",
+            "operating_cost",
+            "time_cost",
+            "toll_cost",
+        ],
     )
+    print(f"The total simulation time: {time.time() - start_time}")
 
     # export files
-    road_link_file.to_parquet(base_path / "demo" / "outputs" / "edge_flows.pq")
-    odpfc.to_parquet(base_path / "demo" / "outputs" / "odpfc.pq")
-    isolated_od_df = pd.Series(isolated_od_dict).reset_index()
-    if isolated_od_df.shape[0] != 0:  # in case of empty df
-        isolated_od_df.columns = ["origin_node", "destination_node", "isolated_flows"]
-        isolated_od_df.to_parquet(
-            base_path / "demo" / "outputs" / "trip_isolations.pq",
-            index=False,
-        )
-    print(f"The total simulation time: {time.time() - start_time}")
+    road_links.to_parquet(base_path.parent / "outputs" / "edge_flows_1128.pq")
+    odpfc.to_parquet(base_path / "odpfc_1128.pq")
+    isolation.to_parquet(base_path.parent / "outputs" / "trip_isolation_1128.pq")
 
 
 if __name__ == "__main__":
