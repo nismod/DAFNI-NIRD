@@ -1402,7 +1402,7 @@ def network_flow_model(
 
         st = time.time()
         with Pool(
-            processes=1,
+            processes=20,
             initializer=worker_init_path,
             initargs=(shared_network_pkl,),
         ) as pool:
