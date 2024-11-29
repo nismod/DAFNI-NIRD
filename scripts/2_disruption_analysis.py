@@ -138,8 +138,6 @@ def main():
     )
     base_scenario_links.rename(
         columns={
-            "free_flow_speeds": "free_flow_speed",
-            "initial_flow_speeds": "initial_speed",
             "acc_capacity": "current_capacity",
             "acc_speed": "current_speed",
         },
@@ -172,8 +170,9 @@ def main():
                 "id",
                 "current_capacity",
                 "current_speed",
-                "free_flow_speed",
-                "initial_speed",
+                "free_flow_speeds",
+                "initial_flow_speeds",
+                "min_flow_speeds",
             ]
         ],
         how="left",
@@ -183,7 +182,7 @@ def main():
     # calculate the maximum speeds on flooded roads
     road_links["max_speed"] = road_links.apply(
         lambda row: compute_maximum_speed_on_flooded_road(
-            row[f"{flood_key}_depth"], row["free_flow_speed"]
+            row[f"{flood_key}_depth"], row["free_flow_speeds"]
         ),
         axis=1,
     )
