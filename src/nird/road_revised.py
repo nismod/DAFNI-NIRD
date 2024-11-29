@@ -1383,8 +1383,24 @@ def network_flow_model(
 
     iter_flag = 1
     while total_remain > 0:
+        graph_nodes = [x["name"] for x in network.vs]
+        isolation.append(
+            remain_od[
+                ~(
+                    (remain_od["origin_node"].isin(graph_nodes))
+                    & (remain_od["destination_node"].isin(graph_nodes))
+                )
+            ]
+        )
+        remain_od = remain_od[
+            (remain_od["origin_node"].isin(graph_nodes))
+            & (remain_od["destination_node"].isin(graph_nodes))
+        ]
         print(f"No.{iter_flag} iteration starts:")
+
         # dump the network and edge weight for shared use in multiprocessing
+        if len(remain_od.index) <= 0:
+            break
         shared_network_pkl = pickle.dumps(network)
 
         # find the least-cost path for each OD trip
@@ -1402,7 +1418,7 @@ def network_flow_model(
 
         st = time.time()
         with Pool(
-            processes=20,
+            processes=1,
             initializer=worker_init_path,
             initargs=(shared_network_pkl,),
         ) as pool:
