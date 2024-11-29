@@ -1168,7 +1168,6 @@ def network_flow_model_copy(
 
         # calculate edge flows
         temp_edge_flow = get_flow_on_edges(temp_flow_matrix, "e_id", "path", "flow")
-
         # add/update edge attributes
         temp_edge_flow["combined_label"] = temp_edge_flow["e_id"].map(edge_cbtype_dict)
         temp_edge_flow["initial_flow_speeds"] = temp_edge_flow["e_id"].map(
@@ -1188,7 +1187,6 @@ def network_flow_model_copy(
         )  # estimated overflow: positive -> has overflow
         max_overflow = temp_edge_flow["est_overflow"].max()
         print(f"The maximum amount of edge overflow: {max_overflow}")
-
         if max_overflow <= 0:
             # add/update edge key variables: flow/speed/capacity
             temp_edge_flow["total_flow"] = (
@@ -1383,24 +1381,8 @@ def network_flow_model(
 
     iter_flag = 1
     while total_remain > 0:
-        graph_nodes = [x["name"] for x in network.vs]
-        isolation.append(
-            remain_od[
-                ~(
-                    (remain_od["origin_node"].isin(graph_nodes))
-                    & (remain_od["destination_node"].isin(graph_nodes))
-                )
-            ]
-        )
-        remain_od = remain_od[
-            (remain_od["origin_node"].isin(graph_nodes))
-            & (remain_od["destination_node"].isin(graph_nodes))
-        ]
         print(f"No.{iter_flag} iteration starts:")
-
         # dump the network and edge weight for shared use in multiprocessing
-        if len(remain_od.index) <= 0:
-            break
         shared_network_pkl = pickle.dumps(network)
 
         # find the least-cost path for each OD trip
@@ -1552,7 +1534,7 @@ def network_flow_model(
         # calculate the ratio of flow adjustment (0 < r < 1)
         temp_edge_flow["r"] = np.where(
             temp_edge_flow["flow"] != 0,
-            temp_edge_flow["temp_acc_capacity"] / temp_edge_flow["flow"],
+            temp_edge_flow["acc_capacity"] / temp_edge_flow["flow"],
             np.nan,
         )
         r = temp_edge_flow.r.min()
@@ -1570,7 +1552,7 @@ def network_flow_model(
         # add/update edge key variables: flows/speeds/capacities
         temp_edge_flow["adjusted_flow"] = temp_edge_flow["flow"] * r
         temp_edge_flow["total_flow"] = (
-            temp_edge_flow.temp_acc_flow + temp_edge_flow.adjusted_flow
+            temp_edge_flow.acc_flow + temp_edge_flow.adjusted_flow
         )
 
         temp_edge_flow["speed"] = np.vectorize(partial_speed_flow_func)(
@@ -1581,7 +1563,7 @@ def network_flow_model(
         )
 
         temp_edge_flow["remaining_capacity"] = (
-            temp_edge_flow.temp_acc_capacity - temp_edge_flow.adjusted_flow
+            temp_edge_flow.acc_capacity - temp_edge_flow.adjusted_flow
         )
         temp_edge_flow.loc[
             temp_edge_flow.remaining_capacity < 0.5, "remaining_capacity"
