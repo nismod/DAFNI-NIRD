@@ -2,6 +2,7 @@
 To estimate the bridge width for OS Open Roads
 """
 
+# %%
 from pathlib import Path
 import pandas as pd
 import geopandas as gpd  # type: ignore
@@ -51,15 +52,24 @@ masteros_bridges_gp = masteros_bridges.groupby(
 
 # %%
 # select partial os links with bridge
-os_links_brdige = os_links.merge(
+os_links_bridge = os_links.merge(
     masteros_bridges_gp, how="right", on="OSOpenRoads_RoadLinkIdentifier"
 )
-os_links_brdige["est_averageWidth"] = os_links_brdige.apply(
-    lambda row: np.mean(row["averageWidth_y"]), axis=1
+
+# sum or average?
+# collapsed dual carriageways (sum of two random bridge widths)
+# others (the average of all bridge widths)
+os_links_bridge["est_averageWidth"] = os_links_bridge.apply(
+    lambda row: (
+        np.sum(sorted(row["averageWidth_y"], reverse=True)[:2])
+        if row["form_of_way"] == "Collapsed Dual Carriageway"
+        else np.mean(row["averageWidth_y"])
+    ),
+    axis=1,
 )
 
 os_links = os_links.merge(
-    os_links_brdige[
+    os_links_bridge[
         ["OSOpenRoads_RoadLinkIdentifier", "averageWidth_y", "est_averageWidth"]
     ],
     how="left",
@@ -75,4 +85,4 @@ os_links.rename(
     },
     inplace=True,
 )
-# os_links.to_parquet(base_path / "networks" / "road" / "GB_road_link_file_bridge.pq")
+os_links.to_parquet(base_path / "networks" / "road" / "GB_road_link_file_bridge.pq")
