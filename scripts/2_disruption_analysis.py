@@ -2,8 +2,7 @@
 import sys
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
+# import pandas as pd
 import geopandas as gpd
 
 from snail import io, intersection
@@ -30,7 +29,7 @@ def intersect_features_with_raster(raster_path, raster_key, features):
     if intersections is None:
         sys.exit()
     intersections = intersection.apply_indices(intersections, grid)
-    intersections[f"{raster_key}_depth"] = intersection.get_raster_values_for_splits(
+    intersections["flood_depth"] = intersection.get_raster_values_for_splits(
         intersections, raster
     )
 
@@ -39,7 +38,7 @@ def intersect_features_with_raster(raster_path, raster_key, features):
     return intersections
 
 
-def clip_feature(features, clip_path, raster_key):
+def clip_features(features, clip_path, raster_key):
     print(f"Clipping features based on {raster_key}...")
     clips = gpd.read_file(clip_path, engine="pyogrio")
     if clips.crs != "epsg:4326":
@@ -53,52 +52,25 @@ def clip_feature(features, clip_path, raster_key):
     return clipped_features
 
 
-def identify_disrupted_link(road_links):
+def identify_disrupted_links(road_links, flood_key, flood_path, clip_path, out_path):
     # convert feature crs to WGS-84 (same as raster)
     road_links = road_links.to_crs("epsg:4326")
-
-    # input: raster map
-    flood_path = (
-        raster_path
-        / "completed"
-        / "12-14_2007 Summer_UK Floods"
-        / "May"
-        / "Raster"
-        / "UK_2007_May_FLSW_RD_5m_4326.tif"
-    )
-    flood_key = "UK_2007_May_FLSW"
-
-    # input: vector of flood footprint
-    clip_path = (
-        raster_path
-        / "completed"
-        / "12-14_2007 Summer_UK Floods"
-        / "May"
-        / "Vector"
-        / "UK_2007_May_FLSW_VE_5m_4326.shp"
-    )
-    clipped_features = clip_feature(road_links, clip_path, flood_key)
-
-    out_path = (
-        base_path.parent
-        / "outputs"
-        / "disruption_analysis"
-        / f"{flood_key}_fld_depth.csv"
-    )
-
+    # mask
+    clipped_features = clip_features(road_links, clip_path, flood_key)
     # intersection
     intersections = intersect_features_with_raster(
         flood_path, flood_key, clipped_features
     )
+    # export intersected featrues
     intersections.to_csv(out_path, index=False)
     print("Complete identifying the disrupted links!")
 
     return intersections
 
 
-def compute_maximum_speed_on_flooded_road(depth, free_flow_speed):
+def compute_maximum_speed_on_flooded_roads(depth, free_flow_speed):
     depth = depth * 1000  # m to mm
-    if depth < 300:  # mm
+    if depth < 300:  # mm: !!! uncertainty analysis (150, 300, 600)
         # value = 0.0009 * depth**2 - 0.5529 * depth + 86.9448  # kmph
         value = free_flow_speed * (depth / 300 - 1) ** 2  # mph
         return value  # mph
@@ -106,33 +78,103 @@ def compute_maximum_speed_on_flooded_road(depth, free_flow_speed):
         return 0.0  # mph
 
 
-def compute_damage_level_on_flooded_road(depth):
-    depth = depth * 1000
-    if depth <= 0:
-        return "no"
-    if 0 < depth < 50:
-        return "minor"
-    elif 50 <= depth < 125:
-        return "moderate"
-    elif 125 <= depth < 300:
-        return "extensive"
+def compute_damage_level_on_flooded_roads(
+    fldType,
+    road_classification,
+    trunk_road,
+    hasTunnel,
+    fldDepth,
+):
+    depth = fldDepth * 100  # cm
+    if fldType == "surface":
+        if hasTunnel == 1 and (
+            road_classification == "Motorway"
+            or (road_classification == "A Road" and trunk_road == "true")
+        ):
+            if depth < 150:
+                return "no"
+            if 150 <= depth < 200:
+                return "minor"
+            elif 200 <= depth < 300:
+                return "moderate"
+            elif 300 <= depth < 700:
+                return "extensive"
+            else:
+                return "severe"
+        elif hasTunnel == 0 and (
+            road_classification == "Motorway"
+            or (road_classification == "A Road" and trunk_road == "true")
+        ):
+            if depth < 150:
+                return "no"
+            if 150 <= depth < 200:
+                return "no"
+            elif 200 <= depth < 300:
+                return "no"
+            elif 300 <= depth < 700:
+                return "minor"
+            else:
+                return "moderate"
+        else:
+            if depth < 50:
+                return "no"
+            if 50 <= depth < 100:
+                return "no"
+            elif 100 <= depth < 200:
+                return "minor"
+            elif 200 <= depth < 600:
+                return "minor"
+            else:
+                return "moderate"
+    elif fldType == "river":
+        if hasTunnel == 1 and (
+            road_classification == "Motorway"
+            or (road_classification == "A Road" and trunk_road == "true")
+        ):
+            if depth < 250:
+                return "no"
+            if 250 <= depth < 300:
+                return "minor"
+            elif 300 <= depth < 400:
+                return "minor"
+            elif 400 <= depth < 800:
+                return "moderate"
+            else:
+                return "extensive"
+        elif hasTunnel == 0 and (
+            road_classification == "Motorway"
+            or (road_classification == "A Road" and trunk_road == "true")
+        ):
+            if depth < 250:
+                return "no"
+            if 250 <= depth < 300:
+                return "minor"
+            elif 300 <= depth < 400:
+                return "moderate"
+            elif 400 <= depth < 800:
+                return "extensive"
+            else:
+                return "severe"
+        else:
+            if depth < 50:
+                return "minor"
+            if 50 <= depth < 100:
+                return "moderate"
+            elif 100 <= depth < 200:
+                return "moderate"
+            elif 200 <= depth < 600:
+                return "extensive"
+            else:
+                return "severe"
     else:
-        return "severe"
+        print("Please enter the type of flood!")
 
 
-def main():
-    # input: road links
+def main(flood_type=None):
+    # road links
     road_links = gpd.read_parquet(
-        base_path / "networks" / "road" / "GB_road_link_file.geoparquet"
+        base_path / "networks" / "road" / "GB_road_link_file.pq"
     )
-    lut = pd.read_csv(
-        base_path
-        / "networks"
-        / "road"
-        / "OSM_OSMasterMap_OSOpenRoadLookUpTable_bridges.csv"
-    )
-    bridge_links = lut["OSOpenRoads_RoadLinkIdentifier"].unique().tolist()
-
     base_scenario_links = gpd.read_parquet(
         base_path.parent / "outputs" / "edge_flows_partial_1128.pq"
     )
@@ -143,8 +185,43 @@ def main():
         },
         inplace=True,
     )
-    # input:
-    intersections, flood_key = identify_disrupted_link(road_links)
+    # paths
+    flood_path = (
+        raster_path
+        / "completed"
+        / "12-14_2007 Summer_UK Floods"
+        / "May"
+        / "Raster"
+        / "UK_2007_May_FLSW_RD_5m_4326.tif"
+    )
+    flood_key = flood_path.stem
+
+    clip_path = (
+        raster_path
+        / "completed"
+        / "12-14_2007 Summer_UK Floods"
+        / "May"
+        / "Vector"
+        / "UK_2007_May_FLSW_VE_5m_4326.shp"
+    )
+
+    out_path = (
+        base_path.parent
+        / "outputs"
+        / "disruption_analysis"
+        / f"{flood_key}_fld_depth.csv"
+    )
+
+    # intersection analysis
+    intersections = identify_disrupted_links(
+        road_links,
+        flood_key,
+        flood_path,
+        clip_path,
+        out_path,
+    )
+
+    # for debug
     # flood_key = "UK_2007_May_FLSW"
     # intersections = pd.read_csv(
     #     base_path.parent
@@ -152,16 +229,13 @@ def main():
     #     / "disruption_analysis"
     #     / "UK_2007_May_FLSW_fld_depth.csv"
     # )
-    intersections = intersections.groupby("id", as_index=False)[
-        f"{flood_key}_depth"
-    ].max()
-    road_links = road_links.merge(
-        intersections[["id", "UK_2007_May_FLSW_depth"]], how="left", on="id"
-    )
-    road_links[f"{flood_key}_depth"] = road_links[f"{flood_key}_depth"].fillna(0.0)
 
-    # attach bridge/non-bridge info (OSM)
-    road_links["bridge"] = np.where(road_links.id.isin(bridge_links), 1, 0)
+    intersections = intersections.groupby("id", as_index=False)["flood_depth"].max()
+
+    road_links = road_links.merge(
+        intersections[["id", "flood_depth"]], how="left", on="id"
+    )
+    road_links["flood_depth"] = road_links["flood_depth"].fillna(0.0)
 
     # attach capacity and speed info on D-zero (Edge_flows)
     road_links = road_links.merge(
@@ -179,18 +253,39 @@ def main():
         on="id",
     )
 
-    # calculate the maximum speeds on flooded roads
+    # calculate the maximum speeds on flooded road links
     road_links["max_speed"] = road_links.apply(
-        lambda row: compute_maximum_speed_on_flooded_road(
-            row[f"{flood_key}_depth"], row["free_flow_speeds"]
+        lambda row: compute_maximum_speed_on_flooded_roads(
+            row["flood_depth"], row["free_flow_speeds"]
         ),
         axis=1,
     )
 
-    # estimate the damage levels
-    road_links["damage_level"] = road_links[f"{flood_key}_depth"].apply(
-        compute_damage_level_on_flooded_road
-    )
+    # estimate damage levels
+    if flood_type == "surface":
+        road_links["damage_level"] = road_links.apply(
+            lambda row: compute_damage_level_on_flooded_roads(
+                "surface",
+                row["road_classification"],
+                row["trunk_road"],
+                row["hasTunnel"],
+                row["flood_depth"],
+            ),
+            axis=1,
+        )
+    elif flood_type == "river":
+        road_links["damage_level"] = road_links.apply(
+            lambda row: compute_damage_level_on_flooded_roads(
+                "river",
+                row.road_classification,
+                row.trunk_road,
+                row.hasTunnel,
+                row["flood_depth"],
+            ),
+            axis=1,
+        )
+    else:
+        print("Please enter flood type!")
 
     road_links.to_parquet(base_path / "disruption_analysis_1129" / "road_links.pq")
     road_links.drop(columns="geometry", inplace=True)
@@ -200,4 +295,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main(flood_type="surface")  # "surface"/"river"
