@@ -112,3 +112,4 @@ cython_debug/
 code_copies
 scripts/scikit-mobility
 scripts/snkit
+config.json

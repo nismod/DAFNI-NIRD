@@ -19,10 +19,10 @@ Create a conda environment using
 to install packages specified in the [`environment.yaml`
 file](https://conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html#create-env-file-manually):
 
-    micromamba env create -f environment.yaml
+    micromamba env create -f environment.yml
 
 (In case micromamba fails to install pip packages, you can install them manually
-by running `micromamba activate nerd` then `pip install --editable .[dev]`)
+by running `micromamba activate nird` then `pip install --editable .[dev]`)
 
 Activate it:
 

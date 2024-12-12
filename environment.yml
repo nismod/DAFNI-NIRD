@@ -1,0 +1,30 @@
+name: nird
+channels:
+  - nodefaults
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - nismod-snail
+      - -e .[dev,docs]
+  - geopandas
+  - networkx
+  - numpy
+  - pandas
+  - python-igraph
+  - snkit
+  - tqdm
+  # dev
+  - black
+  - ipykernel
+  - jupyter
+  - mypy
+  - pre-commit
+  - pytest
+  - pytest-cov
+  - ruff
+  # docs
+  - m2r2
+  - make
+  - sphinx
