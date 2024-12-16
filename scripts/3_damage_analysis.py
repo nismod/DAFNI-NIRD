@@ -17,6 +17,8 @@ raster_path = Path(load_config()["paths"]["JBA_data"])
 
 
 def create_damage_curves(damage_ratio_df):
+    """Create a dictionary of piecewise linear damage curves for various road
+    classifications and flow conditions based on damage ratio data."""
     list_of_damage_curves = []
     cols = damage_ratio_df.columns[1:]
     for col in cols:
@@ -51,7 +53,9 @@ def compute_damage_fraction(
     flood_depth,  # meter
     damage_curves,
 ):
-    # print("Computing damage fractions...")
+    """Compute the damage fraction for a road asset based on its classification,
+    label, and flood depth."""
+
     if road_label == "tunnel" and (
         road_classification == "Motorway"
         or (road_classification == "A Road" and trunk_road)
@@ -75,437 +79,113 @@ def compute_damage_fraction(
 
 
 def compute_damage_values(
-    length,  # meter
+    length,  # in meters
     flood_type,
     damage_fraction,
     road_classification,
     form_of_way,
     urban,
     lanes,
-    road_label,  # ["tunnal", "bridge", "road"]
+    road_label,  # ["tunnel", "bridge", "road"]
     damage_level,
     damage_values,  # million £/unit
     bridge_width=None,
 ):
-    # initialise values
-    mins = []
-    maxs = []
-    # bridges
+    """
+    Calculate the damage costs (minimum, maximum, and mean) for different types of road
+    infrastructure (bridges, tunnels, and ordinary roads) caused by flooding.
+
+    Parameters:
+    ----------
+    length : float
+        The length of the infrastructure (in meters).
+    flood_type : str
+        The type of flood (e.g., "river", "surface").
+    damage_fraction : float
+        The fraction of damage to the infrastructure (e.g., 0.5 for 50% damage).
+    road_classification : str
+        The classification of the road (e.g., "Motorway", "A Road", "B Road").
+    form_of_way : str
+        The configuration of the road (e.g., "Single Carriageway", "Dual Carriageway").
+    urban : int
+        Binary indicator for urban (1) or suburban (0) areas.
+    lanes : int
+        The number of lanes on the road.
+    road_label : str
+        The type of infrastructure ("bridge", "tunnel", or "road").
+    damage_level : str
+        The severity level of damage (e.g., "minor", "major", "catastrophic").
+    damage_values : dict
+        A nested dictionary containing damage cost values (in million £/unit) for
+        different infrastructure types,
+        flood types, and damage levels. The dictionary should have the structure:
+        {
+            "bridge_flood_type": {"damage_level": {"min": value, "max": value}},
+            "tunnel": {"specific_key": {"min": value, "max": value}},
+            "road": {"specific_key": {"min": value, "max": value}}
+        }.
+    bridge_width : float, optional
+        The width of the bridge (in meters). Required if `road_label` is "bridge".
+
+    Returns:
+    -------
+    tuple[float, float, float]
+        A tuple containing:
+        - min_cost (float): The minimum estimated damage cost.
+        - max_cost (float): The maximum estimated damage cost.
+        - mean_cost (float): The mean estimated damage cost.
+
+    Raises:
+    -------
+    AssertionError
+        If `road_label` is "bridge" but `bridge_width` is not provided.
+    """
+
+    def compute_bridge_damage(length, width, flood_type, damage_level):
+        """Calculate min and max damage for bridges."""
+        min_damage = (
+            width * length * damage_values[f"bridge_{flood_type}"][damage_level]["min"]
+        )
+        max_damage = (
+            width * length * damage_values[f"bridge_{flood_type}"][damage_level]["max"]
+        )
+        return min_damage, max_damage
+
+    def compute_tunnel_or_road_damage(length, lanes, key1, key2, damage_fraction):
+        """Calculate min and max damage for tunnels or roads."""
+        min_damage = (
+            length * 1e-3 * lanes * damage_values[key1][key2]["min"] * damage_fraction
+        )
+        max_damage = (
+            length * 1e-3 * lanes * damage_values[key1][key2]["max"] * damage_fraction
+        )
+        return min_damage, max_damage
+
     if road_label == "bridge":
-        assert bridge_width is not None, "Bridge Width is None!"
-        min_bridge = (
-            bridge_width
-            * length
-            * damage_values[f"bridge_{flood_type}"][damage_level]["min"]
+        if bridge_width is None:
+            raise ValueError("Bridge width is required for bridges!")
+        min_cost, max_cost = compute_bridge_damage(
+            length, bridge_width, flood_type, damage_level
         )
-        max_bridge = (
-            bridge_width
-            * length
-            * damage_values[f"bridge_{flood_type}"][damage_level]["max"]
+
+    elif road_label in ["tunnel", "road"]:
+        urban_key = "urb" if urban == 1 else "sub"
+        if road_classification == "Motorway":
+            lane_key = "ge8" if lanes >= 8 else "lt8"
+            key = f"m_{lane_key}_{urban_key}"
+        elif form_of_way == "Single Carriageway":
+            road_type = "a" if road_classification == "A Road" else "b"
+            key = f"{road_type}single_{urban_key}"
+        else:  # Dual Carriageway
+            lane_key = "ge6" if lanes >= 6 else "lt6"
+            key = f"abdual_{lane_key}_{urban_key}"
+
+        min_cost, max_cost = compute_tunnel_or_road_damage(
+            length, lanes, road_label, key, damage_fraction
         )
-        mins.append(min_bridge)
-        maxs.append(max_bridge)
+    else:
+        raise ValueError("Invalid road_label. Must be 'bridge', 'tunnel', or 'road'.")
 
-    # tunnels
-    if road_label == "tunnel":
-        if road_classification == "Motorway":
-            if lanes >= 8:
-                if urban == 1:
-                    min_tunnel = (
-                        length
-                        * 1e-3
-                        * lanes
-                        * damage_values["tunnel"]["m_ge8_urb"]["min"]
-                        * damage_fraction
-                    )
-                    max_tunnel = (
-                        length
-                        * 1e-3
-                        * lanes
-                        * damage_values["tunnel"]["m_ge8_urb"]["max"]
-                        * damage_fraction
-                    )
-                    mins.append(min_tunnel)
-                    maxs.append(max_tunnel)
-                else:
-                    min_tunnel = (
-                        length
-                        * 1e-3
-                        * lanes
-                        * damage_values["tunnel"]["m_ge8_sub"]["min"]
-                        * damage_fraction
-                    )
-                    max_tunnel = (
-                        length
-                        * 1e-3
-                        * lanes
-                        * damage_values["tunnel"]["m_ge8_sub"]["max"]
-                        * damage_fraction
-                    )
-                    mins.append(min_tunnel)
-                    maxs.append(max_tunnel)
-            else:
-                min_tunnel = (
-                    length
-                    * 1e-3
-                    * lanes
-                    * damage_values["tunnel"]["m_lt8"]["min"]
-                    * damage_fraction
-                )
-                max_tunnel = (
-                    length
-                    * 1e-3
-                    * lanes
-                    * damage_values["tunnel"]["m_lt8"]["max"]
-                    * damage_fraction
-                )
-                mins.append(min_tunnel)
-                maxs.append(max_tunnel)
-        else:
-            if form_of_way == "Single Carriageway":
-                if road_classification == "A Road":
-                    if urban == 1:
-                        min_tunnel = (
-                            length
-                            * 1e-3
-                            * lanes
-                            * damage_values["tunnel"]["asingle_urb"]["min"]
-                            * damage_fraction
-                        )
-                        max_tunnel = (
-                            length
-                            * 1e-3
-                            * lanes
-                            * damage_values["tunnel"]["asingle_urb"]["max"]
-                            * damage_fraction
-                        )
-                        mins.append(min_tunnel)
-                        maxs.append(max_tunnel)
-                    else:
-                        min_tunnel = (
-                            length
-                            * 1e-3
-                            * lanes
-                            * damage_values["tunnel"]["asingle_sub"]["min"]
-                            * damage_fraction
-                        )
-                        max_tunnel = (
-                            length
-                            * 1e-3
-                            * lanes
-                            * damage_values["tunnel"]["asingle_sub"]["max"]
-                            * damage_fraction
-                        )
-                        mins.append(min_tunnel)
-                        maxs.append(max_tunnel)
-                else:  # road_classification == "B Road"
-                    if urban == 1:
-                        min_tunnel = (
-                            length
-                            * 1e-3
-                            * lanes
-                            * damage_values["tunnel"]["bsingle_urb"]["min"]
-                            * damage_fraction
-                        )
-                        max_tunnel = (
-                            length
-                            * 1e-3
-                            * lanes
-                            * damage_values["tunnel"]["bsingle_urb"]["max"]
-                            * damage_fraction
-                        )
-                        mins.append(min_tunnel)
-                        maxs.append(max_tunnel)
-                    else:
-                        min_tunnel = (
-                            length
-                            * 1e-3
-                            * lanes
-                            * damage_values["tunnel"]["bsingle_sub"]["min"]
-                            * damage_fraction
-                        )
-                        max_tunnel = (
-                            length
-                            * 1e-3
-                            * lanes
-                            * damage_values["tunnel"]["bsingle_sub"]["max"]
-                            * damage_fraction
-                        )
-                        mins.append(min_tunnel)
-                        maxs.append(max_tunnel)
-            else:
-                if lanes >= 6:
-                    if urban == 1:
-                        min_tunnel = (
-                            length
-                            * 1e-3
-                            * lanes
-                            * damage_values["tunnel"]["abdual_ge6_urb"]["min"]
-                            * damage_fraction
-                        )
-                        max_tunnel = (
-                            length
-                            * 1e-3
-                            * lanes
-                            * damage_values["tunnel"]["abdual_ge6_urb"]["max"]
-                            * damage_fraction
-                        )
-                        mins.append(min_tunnel)
-                        maxs.append(max_tunnel)
-                    else:
-                        min_tunnel = (
-                            length
-                            * 1e-3
-                            * lanes
-                            * damage_values["tunnel"]["abdual_ge6_sub"]["min"]
-                            * damage_fraction
-                        )
-                        max_tunnel = (
-                            length
-                            * 1e-3
-                            * lanes
-                            * damage_values["tunnel"]["abdual_ge6_sub"]["max"]
-                            * damage_fraction
-                        )
-                        mins.append(min_tunnel)
-                        maxs.append(max_tunnel)
-                else:  # lanes < 6
-                    if urban == 1:
-                        min_tunnel = (
-                            length
-                            * 1e-3
-                            * lanes
-                            * damage_values["tunnel"]["abdual_lt6_urb"]["min"]
-                            * damage_fraction
-                        )
-                        max_tunnel = (
-                            length
-                            * 1e-3
-                            * lanes
-                            * damage_values["tunnel"]["abdual_lt6_urb"]["max"]
-                            * damage_fraction
-                        )
-                        mins.append(min_tunnel)
-                        maxs.append(max_tunnel)
-                    else:
-                        min_tunnel = (
-                            length
-                            * 1e-3
-                            * lanes
-                            * damage_values["tunnel"]["abdual_lt6_sub"]["min"]
-                            * damage_fraction
-                        )
-                        max_tunnel = (
-                            length
-                            * 1e-3
-                            * lanes
-                            * damage_values["tunnel"]["abdual_lt6_sub"]["max"]
-                            * damage_fraction
-                        )
-                        mins.append(min_tunnel)
-                        maxs.append(max_tunnel)
-
-    # ordinary roads:
-    if road_label == "road":
-        if road_classification == "Motorway":
-            if lanes >= 8:
-                if urban == 1:
-                    min_tunnel = (
-                        length
-                        * 1e-3
-                        * lanes
-                        * damage_values["road"]["m_ge8_urb"]["min"]
-                        * damage_fraction
-                    )
-                    max_tunnel = (
-                        length
-                        * 1e-3
-                        * lanes
-                        * damage_values["road"]["m_ge8_urb"]["max"]
-                        * damage_fraction
-                    )
-                    mins.append(min_tunnel)
-                    maxs.append(max_tunnel)
-                else:
-                    min_tunnel = (
-                        length
-                        * 1e-3
-                        * lanes
-                        * damage_values["road"]["m_ge8_sub"]["min"]
-                        * damage_fraction
-                    )
-                    max_tunnel = (
-                        length
-                        * 1e-3
-                        * lanes
-                        * damage_values["road"]["m_ge8_sub"]["max"]
-                        * damage_fraction
-                    )
-                    mins.append(min_tunnel)
-                    maxs.append(max_tunnel)
-            else:
-                min_tunnel = (
-                    length
-                    * 1e-3
-                    * lanes
-                    * damage_values["road"]["m_lt8"]["min"]
-                    * damage_fraction
-                )
-                max_tunnel = (
-                    length
-                    * 1e-3
-                    * lanes
-                    * damage_values["road"]["m_lt8"]["max"]
-                    * damage_fraction
-                )
-                mins.append(min_tunnel)
-                maxs.append(max_tunnel)
-        else:
-            if form_of_way == "Single Carriageway":
-                if road_classification == "A Road":
-                    if urban == 1:
-                        min_tunnel = (
-                            length
-                            * 1e-3
-                            * lanes
-                            * damage_values["road"]["asingle_urb"]["min"]
-                            * damage_fraction
-                        )
-                        max_tunnel = (
-                            length
-                            * 1e-3
-                            * lanes
-                            * damage_values["road"]["asingle_urb"]["max"]
-                            * damage_fraction
-                        )
-                        mins.append(min_tunnel)
-                        maxs.append(max_tunnel)
-                    else:
-                        min_tunnel = (
-                            length
-                            * 1e-3
-                            * lanes
-                            * damage_values["road"]["asingle_sub"]["min"]
-                            * damage_fraction
-                        )
-                        max_tunnel = (
-                            length
-                            * 1e-3
-                            * lanes
-                            * damage_values["road"]["asingle_sub"]["max"]
-                            * damage_fraction
-                        )
-                        mins.append(min_tunnel)
-                        maxs.append(max_tunnel)
-                else:  # road_classification == "B Road"
-                    if urban == 1:
-                        min_tunnel = (
-                            length
-                            * 1e-3
-                            * lanes
-                            * damage_values["road"]["bsingle_urb"]["min"]
-                            * damage_fraction
-                        )
-                        max_tunnel = (
-                            length
-                            * 1e-3
-                            * lanes
-                            * damage_values["road"]["bsingle_urb"]["max"]
-                            * damage_fraction
-                        )
-                        mins.append(min_tunnel)
-                        maxs.append(max_tunnel)
-                    else:
-                        min_tunnel = (
-                            length
-                            * 1e-3
-                            * lanes
-                            * damage_values["road"]["bsingle_sub"]["min"]
-                            * damage_fraction
-                        )
-                        max_tunnel = (
-                            length
-                            * 1e-3
-                            * lanes
-                            * damage_values["road"]["bsingle_sub"]["max"]
-                            * damage_fraction
-                        )
-                        mins.append(min_tunnel)
-                        maxs.append(max_tunnel)
-            else:
-                if lanes >= 6:
-                    if urban == 1:
-                        min_tunnel = (
-                            length
-                            * 1e-3
-                            * lanes
-                            * damage_values["road"]["abdual_ge6_urb"]["min"]
-                            * damage_fraction
-                        )
-                        max_tunnel = (
-                            length
-                            * 1e-3
-                            * lanes
-                            * damage_values["road"]["abdual_ge6_urb"]["max"]
-                            * damage_fraction
-                        )
-                        mins.append(min_tunnel)
-                        maxs.append(max_tunnel)
-                    else:
-                        min_tunnel = (
-                            length
-                            * 1e-3
-                            * lanes
-                            * damage_values["road"]["abdual_ge6_sub"]["min"]
-                            * damage_fraction
-                        )
-                        max_tunnel = (
-                            length
-                            * 1e-3
-                            * lanes
-                            * damage_values["road"]["abdual_ge6_sub"]["max"]
-                            * damage_fraction
-                        )
-                        mins.append(min_tunnel)
-                        maxs.append(max_tunnel)
-                else:  # lanes < 6
-                    if urban == 1:
-                        min_tunnel = (
-                            length
-                            * 1e-3
-                            * lanes
-                            * damage_values["road"]["abdual_lt6_urb"]["min"]
-                            * damage_fraction
-                        )
-                        max_tunnel = (
-                            length
-                            * 1e-3
-                            * lanes
-                            * damage_values["road"]["abdual_lt6_urb"]["max"]
-                            * damage_fraction
-                        )
-                        mins.append(min_tunnel)
-                        maxs.append(max_tunnel)
-                    else:
-                        min_tunnel = (
-                            length
-                            * 1e-3
-                            * lanes
-                            * damage_values["road"]["abdual_lt6_sub"]["min"]
-                            * damage_fraction
-                        )
-                        max_tunnel = (
-                            length
-                            * 1e-3
-                            * lanes
-                            * damage_values["road"]["abdual_lt6_sub"]["max"]
-                            * damage_fraction
-                        )
-                        mins.append(min_tunnel)
-                        maxs.append(max_tunnel)
-
-    min_cost = min(mins)
-    max_cost = max(maxs)
     mean_cost = np.mean([min_cost, max_cost])
 
     return min_cost, max_cost, mean_cost
@@ -674,24 +354,13 @@ def main():
         "bridge_river": dv_bridge_river_dict,
     }
 
-    # features
-    # TEST: intersections: split, index_i, index_j, flood_depth
-    """Required attributes:
-    bridge_width: numeric or None
-    flood_depth_surface: numeric or None
-    flood_depth_river: numeric or None
-    damage_level_surface: no, minor, moderate, extensive, severe
-    damage_level_river: no, minor, moderate, extensive, severe
-    road_label: road, tunnel, bridge
-    """
-
+    # Load intersection data and assign attributes for damage calculations
     intersections = gpd.read_parquet(
         base_path.parent
         / "outputs"
         / "disruption_analysis_1129"
         / "UK_2007_May_FLSW_RD_5m_4326_fld_depth.geopq"
     )
-
     intersections.rename(
         columns={
             "flood_depth": "flood_depth_surface",
@@ -705,6 +374,7 @@ def main():
     intersections.loc[intersections.hasTunnel == 1, "road_label"] = "tunnel"
     intersections.loc[intersections.aveBridgeWidth > 0, "road_label"] == "bridge"
 
+    # run damage analysis
     intersections_with_damage = calculate_damage(
         intersections, damage_curves, damage_values
     )
