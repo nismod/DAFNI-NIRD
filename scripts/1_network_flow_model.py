@@ -41,10 +41,21 @@ def main():
     )
     # od_node_2021 = od_node_2021[od_node_2021.Car21 > 1].reset_index(drop=True)
     od_node_2021["Car21"] = od_node_2021["Car21"] * 2
-    # od_node_2021 = od_node_2021.head(100000) # for debug
+    # od_node_2021 = od_node_2021.head(10) # for debug
     print(f"total flows: {od_node_2021.Car21.sum()}")
 
-    # create igraph network
+    # initialise road links
+    """ adding columns:
+    - edge properties:
+        free-flow speeds
+        min speeds (urban/rural)
+        max speeds (on flooded roads -> for disruption analysis only)
+        initial speeds
+    - edge variables:
+        acc_speed
+        acc_flow
+        acc_capacity
+    """
     road_links = func.edge_init(
         road_link_file,
         flow_capacity_dict,
@@ -53,7 +64,8 @@ def main():
         min_speed_dict,
         max_flow_speed_dict=None,
     )
-    network, road_links = func.create_igraph_network(road_links)
+    # create igraph network
+    network = func.create_igraph_network(road_links)
 
     # run flow simulation
     road_links, isolation, odpfc = func.network_flow_model(
@@ -66,10 +78,22 @@ def main():
             "destination_node",
             "path",
             "flow",
-            "operating_cost",
-            "time_cost",
-            "toll_cost",
+            "operating_cost_per_flow",
+            "time_cost_per_flow",
+            "toll_cost_per_flow",
         ],
+    )
+
+    odpfc.path = odpfc.path.apply(tuple)
+    odpfc = odpfc.groupby(
+        by=["origin_node", "destination_node", "path"], as_index=False
+    ).agg(
+        {
+            "flow": "sum",
+            "operating_cost_per_flow": "first",
+            "time_cost_per_flow": "first",
+            "toll_cost_per_flow": "first",
+        }
     )
 
     isolation = pd.DataFrame(
@@ -79,17 +103,17 @@ def main():
             "destination_node",
             "path",
             "flow",
-            "operating_cost",
-            "time_cost",
-            "toll_cost",
+            "operating_cost_per_flow",
+            "time_cost_per_flow",
+            "toll_cost_per_flow",
         ],
     )
     print(f"The total simulation time: {time.time() - start_time}")
 
     # export files
     road_links.to_parquet(base_path.parent / "outputs" / "edge_flows_1128.pq")
-    odpfc.to_parquet(base_path.parent / "odpfc_1128.pq")
     isolation.to_parquet(base_path.parent / "outputs" / "trip_isolation_1128.pq")
+    odpfc.to_parquet(base_path.parent / "odpfc_1128.pq")
 
 
 if __name__ == "__main__":
