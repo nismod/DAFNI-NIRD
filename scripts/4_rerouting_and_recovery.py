@@ -1,4 +1,3 @@
-# %%
 from pathlib import Path
 from functools import partial
 
@@ -19,7 +18,6 @@ base_path = Path(load_config()["paths"]["base_path"])
 tqdm.pandas()
 
 
-# %%
 def have_common_items(list1, list2):
     return bool(set(list1) & set(list2))
 

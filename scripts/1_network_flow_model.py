@@ -1,6 +1,8 @@
 # %%
 from pathlib import Path
+import sys
 import time
+
 import pandas as pd
 import geopandas as gpd  # type: ignore
 
@@ -16,13 +18,13 @@ base_path = Path(load_config()["paths"]["base_path"])
 
 
 # %%
-def main():
+def main(num_of_cpu):
     start_time = time.time()
     # model parameters
     with open(base_path / "parameters" / "flow_breakpoint_dict.json", "r") as f:
         flow_breakpoint_dict = json.load(f)
     with open(base_path / "parameters" / "flow_cap_plph_dict.json", "r") as f:
-        flow_capacity_dict = json.load(f)  # edge capacities per lane per hour
+        flow_capacity_dict = json.load(f)
     with open(base_path / "parameters" / "free_flow_speed_dict.json", "r") as f:
         free_flow_speed_dict = json.load(f)
     with open(base_path / "parameters" / "min_speed_cap.json", "r") as f:
@@ -37,11 +39,10 @@ def main():
 
     # od matrix (2021)
     od_node_2021 = pd.read_csv(
-        base_path / "census_datasets" / "od_matrix" / "od_gb_oa_2021_node.csv"
+        base_path / "census_datasets" / "od_matrix" / "od_gb_oa_2021_node_33p.csv"
     )
-    # od_node_2021 = od_node_2021[od_node_2021.Car21 > 1].reset_index(drop=True)
     od_node_2021["Car21"] = od_node_2021["Car21"] * 2
-    # od_node_2021 = od_node_2021.head(10) # for debug
+    # od_node_2021 = od_node_2021.head(10)  # for debug
     print(f"total flows: {od_node_2021.Car21.sum()}")
 
     # initialise road links
@@ -69,8 +70,13 @@ def main():
 
     # run flow simulation
     road_links, isolation, odpfc = func.network_flow_model(
-        road_links, network, od_node_2021, flow_breakpoint_dict
+        road_links,
+        network,
+        od_node_2021,
+        flow_breakpoint_dict,
+        num_of_cpu,
     )
+
     odpfc = pd.DataFrame(
         odpfc,
         columns=[
@@ -111,10 +117,14 @@ def main():
     print(f"The total simulation time: {time.time() - start_time}")
 
     # export files
-    road_links.to_parquet(base_path.parent / "outputs" / "edge_flows_1128.pq")
-    isolation.to_parquet(base_path.parent / "outputs" / "trip_isolation_1128.pq")
-    odpfc.to_parquet(base_path.parent / "odpfc_1128.pq")
+    road_links.to_parquet(base_path.parent / "outputs" / "edge_flows_33p.pq")
+    isolation.to_parquet(base_path.parent / "outputs" / "trip_isolation_33p.pq")
+    odpfc.to_parquet(base_path.parent / "odpfc_33p.pq")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        num_of_cpu = int(sys.argv[1])
+    except IndexError or NameError:
+        print("Please enter the required number of CPUs!")
+    main(num_of_cpu)
