@@ -1,3 +1,4 @@
+# %%
 from pathlib import Path
 from functools import partial
 
@@ -18,6 +19,7 @@ base_path = Path(load_config()["paths"]["base_path"])
 tqdm.pandas()
 
 
+# %%
 def have_common_items(list1, list2):
     return bool(set(list1) & set(list2))
 
@@ -89,6 +91,13 @@ def ordinary_road_recovery(
 
 
 def main():
+    """Inputs:
+    - road_links with added attributes:
+        [disruption analysis] road_label, flood_depth_max, damage_level_max,
+        [base scenario analysis] current_capacity, current_speed,
+        [config] free_flow_speed, min_flow_speeds, max_speed, initial_flow_speeds
+    - odpfc [base scenario output]
+    """
     # bridge recovery rates
     with open(base_path / "parameters" / "capt_minor.json", "r") as f:
         bridge_minor = json.load(f)
@@ -133,8 +142,12 @@ def main():
 
     # road links (with 8 added columns)
     road_links = gpd.read_parquet(
-        base_path / "disruption_analysis_1129" / "road_links2.pq"
-    )
+        base_path.parent
+        / "outputs"
+        / "disruption_analysis"
+        / "20241229"
+        / "road_links_7.gpq"  # 2007 Summer Flood - July
+    )  # input1
     road_links = func.edge_reclassification_func(road_links)
     road_links["designed_capacity"] = (
         road_links.combined_label.map(flow_capacity_dict) * road_links.lanes * 24
@@ -147,9 +160,9 @@ def main():
     disrupted_links = (
         road_links.loc[
             (road_links.max_speed < road_links.current_speed)
-            | (road_links.damage_level == "extensive")
-            | (road_links.damage_level == "severe"),
-            "id",
+            | (road_links.damage_level_max == "extensive")
+            | (road_links.damage_level_max == "severe"),
+            "e_id",
         ]
         .unique()
         .tolist()
@@ -158,14 +171,15 @@ def main():
     # extract the disrupted od matrix
     partial_have_common_items = partial(have_common_items, list2=disrupted_links)
     od_path_file = pd.read_parquet(
-        base_path.parent / "outputs" / "odpfc_partial_1128.pq"
-    )
+        base_path.parent / "outputs" / "odpfc_32p.pq", engine="fastparquet"
+    )  # input2
     od_path_file["disrupted"] = np.vectorize(partial_have_common_items)(
         od_path_file.path
     )
     disrupted_od = od_path_file[od_path_file["disrupted"]].reset_index(drop=True)
-    disrupted_od.rename(columns={"flow": "Car21"}, inplace=True)
-    disrupted_od = disrupted_od.head(10)  # debug: 76
+    disrupted_od.rename(columns={"flow": "Car21"}, inplace=True)  # (15090, )
+    disrupted_od.drop(columns="disrupted", inplace=True)
+    # disrupted_od = disrupted_od.head(10)  # debug: 76
 
     """
     recovery of road capacities (-> for mapping):
@@ -178,12 +192,13 @@ def main():
 
     # key variables for rerouting analysis:
     road_links["disrupted"] = 0
-    road_links.loc[road_links.id.isin(disrupted_links), "disrupted"] = 1
+    road_links.loc[road_links.e_id.isin(disrupted_links), "disrupted"] = 1
     road_links["acc_flow"] = 0
     road_links["acc_capacity"] = road_links["current_capacity"]
     road_links["acc_speed"] = road_links["current_speed"]
 
     for day in range(111):  # Day 0-110
+        print(f"Rerouting Analysis on D-{day}...")
         (
             road_links["acc_capacity"],
             road_links["acc_speed"],
@@ -192,7 +207,7 @@ def main():
                 lambda row: (
                     bridge_recovery(
                         day,
-                        row["damage_level"],
+                        row["damage_level_max"],
                         row["designed_capacity"],
                         row["current_speed"],
                         row["initial_flow_speeds"],
@@ -201,11 +216,11 @@ def main():
                         row["acc_speed"],
                         row["acc_capacity"],
                     )
-                    if row["disrupted"] == 1 and row["aveBridgeWidth"] > 0
+                    if row["disrupted"] == 1 and row["road_label"] == "bridge"
                     else (
                         ordinary_road_recovery(
                             day,
-                            row["damage_level"],
+                            row["damage_level_max"],
                             row["designed_capacity"],
                             row["current_speed"],
                             row["initial_flow_speeds"],
@@ -214,7 +229,7 @@ def main():
                             row["acc_speed"],
                             row["acc_capacity"],
                         )
-                        if row["disrupted"] == 1 and row["aveBridgeWidth"] == 0
+                        if row["disrupted"] == 1 and row["road_label"] != "bridge"
                         else (row["acc_capacity"], row["acc_speed"])
                     )
                 ),
@@ -231,78 +246,57 @@ def main():
         network = func.create_igraph_network(valid_road_links)
 
         # run rerouting analysis
-        valid_road_links, isolation, odpfc = func.network_flow_model(
-            valid_road_links, network, disrupted_od, flow_breakpoint_dict
+        valid_road_links, isolation, _ = func.network_flow_model(
+            valid_road_links,
+            network,
+            disrupted_od,
+            flow_breakpoint_dict,
+            num_of_cpu=5,  # system input
         )
-
+        breakpoint()
         # update key variables
-        road_links.set_index("e_id", inplace=True)
-        valid_road_links.set_index("e_id", inplace=True)
-        road_links[["acc_flow", "acc_capacity", "acc_speed"]].update(
-            valid_road_links[["acc_flow", "acc_capacity", "acc_speed"]]
+        road_links = road_links.set_index("e_id")
+        road_links.update(
+            valid_road_links.set_index("e_id")[
+                ["acc_flow", "acc_capacity", "acc_speed"]
+            ]
         )
-        road_links.reset_index(inplace=True)
+        road_links = road_links.reset_index()
 
-        odpfc = pd.DataFrame(
-            odpfc,
-            columns=[
-                "origin_node",
-                "destination_node",
-                "path",
-                "flow",
-                "operating_cost_per_flow",
-                "time_cost_per_flow",
-                "toll_cost_per_flow",
-            ],
-        )
-
-        odpfc.path = odpfc.path.apply(tuple)
-        odpfc = odpfc.groupby(
-            by=["origin_node", "destination_node", "path"], as_index=False
-        ).agg(
-            {
-                "flow": "sum",
-                "operating_cost_per_flow": "first",
-                "time_cost_per_flow": "first",
-                "toll_cost_per_flow": "first",
-            }
-        )
-
-        isolation = pd.DataFrame(
+        # isolation_total.extend(isolation)
+        isolation_df = pd.DataFrame(
+            # isolation_total,
             isolation,
             columns=[
                 "origin_node",
                 "destination_node",
-                "path",
                 "flow",
-                "operating_cost_per_flow",
-                "time_cost_per_flow",
-                "toll_cost_per_flow",
             ],
         )
+        if isolation_df.empty:
+            print("There is no disrupted flows!")
+            break
 
         # export rerouting results
-        if day in [0, 15, 30, 60, 90, 110]:
-            road_links.to_parquet(
-                base_path.parent
-                / "outputs"
-                / "disruption_analysis"
-                / f"edge_flows_{day}.pq"
-            )
-            isolation.to_csv(
-                base_path.parent
-                / "outputs"
-                / "disruption_analysis"
-                / f"isolated_odf_{day}.csv",
-                index=False,
-            )
-            odpfc.to_csv(
-                base_path.parent
-                / "outputs"
-                / "disruption_analysis"
-                / f"odpfc_{day}.csv",
-                index=False,
-            )
+        else:
+            if day in [0, 1, 2, 3, 4, 5, 15, 30, 60, 90, 110]:
+                road_links.to_parquet(
+                    base_path.parent
+                    / "outputs"
+                    / "rerouting_analysis"
+                    / "20241229"
+                    / "7"
+                    / f"edge_flows_{day}.gpq"
+                )
+                isolation_df.to_csv(
+                    base_path.parent
+                    / "outputs"
+                    / "rerouting_analysis"
+                    / "20241229"
+                    / "7"
+                    / f"trip_isolations_{day}.csv",
+                    index=False,
+                )
 
 
 if __name__ == "__main__":

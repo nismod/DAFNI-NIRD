@@ -31,8 +31,9 @@ def intersect_features_with_raster(
     grid, _ = io.read_raster_metadata(raster_path)
     prepared = intersection.prepare_linestrings(features)
     intersections = intersection.split_linestrings(prepared, grid)
-    if intersections is None:
-        sys.exit()
+    # if intersections is None:
+    #     print("Intersection Error: Linestring_features is empty!")
+    #     sys.exit()
     intersections = intersection.apply_indices(intersections, grid)
     intersections[f"flood_depth_{flood_type}"] = (
         intersection.get_raster_values_for_splits(intersections, raster)
@@ -40,6 +41,8 @@ def intersect_features_with_raster(
 
     # reproject back
     intersections = intersections.to_crs("epsg:27700")
+    intersections["length"] = intersections.geometry.length
+
     return intersections
 
 
@@ -190,7 +193,9 @@ def intersections_with_damage(
     # Clip road links with features in the provided vector file
     road_links = road_links.to_crs("epsg:4326")
     clipped_features = clip_features(road_links, clip_path, flood_key)
-
+    if clipped_features.empty:
+        print("Warning: Clip features is None!")
+        return None
     # Perform intersection analysis with the flood raster
     intersections = intersect_features_with_raster(
         flood_path,
@@ -321,9 +326,15 @@ def features_with_damage(
 
 
 def main():
+    """Inputs:
+    - base flow simulation
+    - road_links
+    - flood event map
+    - clip mask
+    """
     # base scenario simulation results
     base_scenario_links = gpd.read_parquet(
-        base_path.parent / "outputs" / "edge_flows_partial_1128.pq"
+        base_path.parent / "outputs" / "edge_flows_32p.pq"
     )
     base_scenario_links.rename(
         columns={
@@ -374,35 +385,24 @@ def main():
     event_dict = defaultdict(lambda: defaultdict(list))
     for flood_type, list_of_events in event_files.items():
         for event_path in list_of_events:
-            event_key = "_".join(
-                Path(event_path).stem.split("_")[:2]
-            )  # rename events under "both" category
+            # event_key = "_".join(
+            #     Path(event_path).stem.split("_")[:2]
+            # )  # rename events under "both" category
+            event_key = event_path.split("\\")[6].split("_")[0]
             event_dict[event_key][flood_type].append(event_path)
 
     # analysis
     for flood_key, v in event_dict.items():
         # road links
         road_links = gpd.read_parquet(
-            base_path / "networks" / "road" / "GB_road_link_file.pq"
+            base_path / "networks" / "road" / "GB_road_links_with_bridges.gpq"
         )
-        # added columns for debug
-        road_links["road_label"] = "road"
-        road_links.loc[road_links.road_structure == "Road In Tunnel", "road_label"] = (
-            "tunnel"
-        )
-        road_links.loc[road_links.aveBridgeWidth > 0, "road_label"] = "bridge"
 
         # out path
-        out_path = (
-            base_path.parent
-            / "outputs"
-            / "disruption_analysis_1129"
-            / f"intersections_{flood_key}.pq"
+        out_path = base_path.parent / "outputs" / "disruption_analysis" / "20241229"
+        intersections = gpd.GeoDataFrame(
+            columns=["e_id", "length", "index_i", "index_j"]
         )
-        intersections = gpd.GeoDataFrame(columns=["e_id", "index_i", "index_j"])
-        # debug
-        if flood_key != "UK_1998":
-            continue
 
         for flood_type, flood_paths in v.items():
             for flood_path in flood_paths:
@@ -410,37 +410,45 @@ def main():
                 clip_path = Path(
                     flood_path.replace("Raster", "Vector").replace(".tif", ".shp")
                 )
-                clip_path1 = clip_path.with_name(clip_path.name.replace("RD", "VE"))
-                clip_path2 = clip_path.with_name(clip_path.name.replace("RD", "PR"))
-
+                clip_path1 = clip_path.with_name(clip_path.name.replace("_RD_", "_VE_"))
+                clip_path2 = clip_path.with_name(clip_path.name.replace("_RD_", "_PR_"))
                 if clip_path1.exists():
                     clip_path = clip_path1
                 elif clip_path2.exists():
                     clip_path = clip_path2
                 else:
                     print(f"Cannot find vector file for: {flood_path}")
+                    # breakpoint()
                     continue  # Skip further processing for this file
 
                 # intersections
                 temp_file = intersections_with_damage(
                     road_links, flood_key, flood_type, flood_path, clip_path
                 )
+                if temp_file is None:
+                    # breakpoint()
+                    continue
                 intersections = intersections.merge(
                     temp_file[
                         [
                             "e_id",
+                            "length",
                             "index_i",
                             "index_j",
                             f"flood_depth_{flood_type}",
                             f"damage_level_{flood_type}",
                         ]
                     ],
-                    on=["e_id", "index_i", "index_j"],
+                    on=["e_id", "length", "index_i", "index_j"],
                     how="outer",
                 )
 
         # save intersectiosn for damage analysis
-        intersections.to_parquet(out_path)
+        if intersections.empty:
+            print("Warning: intersections result is empty!")
+            # breakpoint()
+            continue
+        intersections.to_parquet(out_path / f"intersections_{flood_key}.pq")
 
         # road integrations
         road_links = features_with_damage(
@@ -479,12 +487,7 @@ def main():
             ),
             axis=1,
         )
-        road_links.to_parquet(
-            base_path.parent
-            / "outputs"
-            / "disruption_analysis_1129"
-            / f"road_links_{flood_key}.pq"
-        )
+        road_links.to_parquet(out_path / f"road_links_{flood_key}.gpq")
 
 
 if __name__ == "__main__":

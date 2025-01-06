@@ -236,7 +236,7 @@ def edge_initial_speed_func(
     road_links: pd.DataFrame,
     free_flow_speed_dict: Dict[str, float],
     urban_flow_speed_dict: Dict[str, float],
-    min_flow_speed_dict: Dict[str, float],  # add a minimum speed cap
+    min_flow_speed_dict: Dict[str, float],
     max_flow_speed_dict: Dict[str, float] = None,
 ) -> Tuple[pd.DataFrame, Dict[str, float]]:
     """Calculate the initial vehicle speed for network edges.
@@ -431,15 +431,13 @@ def create_igraph_network(
             "average_toll_cost",
         ]
     ]
+
     network = igraph.Graph.TupleList(
         graph_df.itertuples(index=False),
         edge_attrs=list(graph_df.columns)[2:],
         directed=False,
     )
-    # drop cost-based columns
-    road_links = road_links.iloc[:, :-6]
-
-    return network  # , road_links
+    return network
 
 
 def update_network_structure(
@@ -470,10 +468,18 @@ def update_network_structure(
     # update edges' weights
     remaining_edges = network.es["e_id"]
     graph_df = road_links[road_links.e_id.isin(remaining_edges)][
-        "from_id", "to_id", "e_id", "weight"
+        [
+            "from_id",
+            "to_id",
+            "e_id",
+            "weight",
+            "time_cost",
+            "operating_cost",
+            "average_toll_cost",
+        ]
     ]
     network = igraph.Graph.TupleList(
-        graph_df.itertuples(Index=False),
+        graph_df.itertuples(index=False),
         edge_attrs=list(graph_df.columns)[2:],
         directed=False,
     )
@@ -529,7 +535,8 @@ def update_od_matrix(
 
     Parameters
     ----------
-    temp_flow_matrix: origin, destination, path, flow
+    temp_flow_matrix: origin, destination, path, flow, operating_cost_per_flow,
+        time_cost_per_flow, toll_cost_per_flow
     remain_od: origin, destination, flow
 
     Returns
@@ -539,7 +546,9 @@ def update_od_matrix(
     remain_od: the remaining od matrix
     """
     mask = temp_flow_matrix["path"].apply(lambda x: len(x) == 0)
-    isolated_flow_matrix = temp_flow_matrix[mask]
+    isolated_flow_matrix = temp_flow_matrix.loc[
+        mask, ["origin", "destination", "flow"]
+    ]  # drop the cost columns
     print(f"Non_allocated_flow: {isolated_flow_matrix.flow.sum()}")
     temp_flow_matrix = temp_flow_matrix[~mask]
     remain_origins = temp_flow_matrix.origin.unique().tolist()
@@ -676,6 +685,7 @@ def worker_init_edge(
         The pickled file of the igraph network.
     shared_weight_pkl: bytes
         The pickled flle of a dictionary of network edge weights.
+
     Returns
     -------
     None.
@@ -693,8 +703,10 @@ def network_flow_model(
     network: igraph.Graph,
     remain_od: pd.DataFrame,
     flow_breakpoint_dict: Dict[str, float],
+    num_of_cpu,
 ) -> Tuple[gpd.GeoDataFrame, List, List]:
     """Process-based Network Flow Simulation.
+
     Parameters
     ----------
     road_links: road links
@@ -733,6 +745,17 @@ def network_flow_model(
     iter_flag = 1
     while total_remain > 0:
         print(f"No.{iter_flag} iteration starts:")
+        # check isolations
+        mask = remain_od.origin_node.isin(network.vs["name"]) & (
+            remain_od.destination_node.isin(network.vs["name"])
+        )
+        isolation.extend(
+            remain_od.loc[
+                ~mask, ["origin_node", "destination_node", "Car21"]
+            ].values.tolist()
+        )
+        remain_od = remain_od[mask].reset_index(drop=True)
+
         # dump the network and edge weight for shared use in multiprocessing
         shared_network_pkl = pickle.dumps(network)
 
@@ -751,7 +774,7 @@ def network_flow_model(
 
         st = time.time()
         with Pool(
-            processes=1,  # update the number of cpu cores
+            processes=num_of_cpu,
             initializer=worker_init_path,
             initargs=(shared_network_pkl,),
         ) as pool:
@@ -910,7 +933,7 @@ def network_flow_model(
         )
         temp_edge_flow["acc_speed"] = np.vectorize(partial_speed_flow_func)(
             temp_edge_flow["combined_label"],
-            temp_edge_flow["total_flow"],
+            temp_edge_flow["acc_flow"],
             temp_edge_flow["initial_flow_speeds"],
             temp_edge_flow["min_flow_speeds"],
         )
@@ -954,6 +977,7 @@ def network_flow_model(
     # update the road links attributes
     road_links.acc_flow = road_links.acc_flow.astype(int)
     road_links.acc_capacity = road_links.acc_capacity.astype(int)
+    road_links = road_links.iloc[:, :-6]  # drop cost-related columns
 
     print("The flow simulation is completed!")
     print(f"total travel cost is (£): {total_cost}")

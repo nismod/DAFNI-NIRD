@@ -1,3 +1,5 @@
+# %%
+import os
 from pathlib import Path
 
 import pandas as pd
@@ -16,6 +18,7 @@ base_path = Path(load_config()["paths"]["base_path"])
 raster_path = Path(load_config()["paths"]["JBA_data"])
 
 
+# %%
 def create_damage_curves(damage_ratio_df):
     """Create a dictionary of piecewise linear damage curves for various road
     classifications and flow conditions based on damage ratio data."""
@@ -242,7 +245,7 @@ def calculate_damage(disrupted_links, damage_curves, damage_values):
 
         # Compute damage values for both curves
         damage_values_1 = compute_damage_values(
-            row.geometry.length,
+            row.length,
             flood_type,
             damage_fraction1,
             row.road_classification,
@@ -252,10 +255,10 @@ def calculate_damage(disrupted_links, damage_curves, damage_values):
             row.road_label,
             row[f"damage_level_{flood_type}"],
             damage_values,
-            row.aveBridgeWidth,
+            row.averageWidth,
         )
         damage_values_2 = compute_damage_values(
-            row.geometry.length,
+            row.length,
             flood_type,
             damage_fraction2,
             row.road_classification,
@@ -265,7 +268,7 @@ def calculate_damage(disrupted_links, damage_curves, damage_values):
             row.road_label,
             row[f"damage_level_{flood_type}"],
             damage_values,
-            row.aveBridgeWidth,
+            row.averageWidth,
         )
 
         # Return a dictionary of results for easier assignment
@@ -295,14 +298,78 @@ def calculate_damage(disrupted_links, damage_curves, damage_values):
     return disrupted_links
 
 
+def format_intersections(intersections, road_links):
+    # Define default values for missing columns
+    columns_to_add = {
+        "flood_depth_surface": 0.0,
+        "flood_depth_river": 0.0,
+        "damage_level_surface": "no",
+        "damage_level_river": "no",
+    }
+
+    # Define mappings for damage levels
+    damage_level_dict = {
+        "no": 0,
+        "minor": 1,
+        "moderate": 2,
+        "extensive": 3,
+        "severe": 4,
+    }
+    damage_level_dict_reverse = {v: k for k, v in damage_level_dict.items()}
+
+    # Ensure all required columns exist with default values
+    for col, default_value in columns_to_add.items():
+        if col not in intersections.columns:
+            intersections[col] = default_value
+        else:
+            intersections[col].fillna(default_value, inplace=True)
+
+    # Map damage levels to numeric values
+    for col in ["damage_level_surface", "damage_level_river"]:
+        intersections[col] = intersections[col].map(damage_level_dict)
+
+    # Group by specific columns and take the max value for each group
+    group_columns = ["e_id", "length", "index_i", "index_j"]
+    intersections_gp = intersections.groupby(group_columns, as_index=False).max(
+        numeric_only=True
+    )  # Ensure numeric columns are aggregated
+
+    # Reverse map numeric damage levels back to strings
+    for col in ["damage_level_surface", "damage_level_river"]:
+        intersections_gp[col] = intersections_gp[col].map(damage_level_dict_reverse)
+    intersections_gp = intersections_gp.merge(
+        road_links[
+            [
+                "e_id",
+                "road_classification",
+                "form_of_way",
+                "trunk_road",
+                "urban",
+                "lanes",
+                "averageWidth",
+                "road_label",
+            ]
+        ],
+        on="e_id",
+        how="left",
+    )
+    return intersections_gp
+
+
 def main():
+    """Inputs:
+    - damage ratios
+    - damage values
+    - intersections in module 2
+    - road links' attributes
+    """
     # damage curves
     """
     4 damage curvse for M and A roads
     2 damage curvse for B roads
     """
     damages_ratio_df = pd.read_excel(
-        base_path / "disruption_analysis_1129" / "damage_ratio_road_flood.xlsx"
+        base_path / "tables" / "damage_ratio_road_flood.xlsx"
     )
     damage_curves = create_damage_curves(damages_ratio_df)
 
@@ -311,6 +378,9 @@ def main():
     asset types, number of lanes, flood types
     min, max, mean damage values
     """
+    road_links = gpd.read_parquet(
+        base_path / "networks" / "road" / "GB_road_links_with_bridges.gpq"
+    )
     road_damage_file = pd.read_excel(
         base_path / "tables" / "damage_values.xlsx", sheet_name="roads"
     )
@@ -355,47 +425,49 @@ def main():
     }
 
     # Load intersection data and assign attributes for damage calculations
-    intersections = gpd.read_parquet(
-        base_path.parent
-        / "outputs"
-        / "disruption_analysis_1129"
-        / "UK_2007_May_FLSW_RD_5m_4326_fld_depth.geopq"
-    )
-    intersections.rename(
-        columns={
-            "flood_depth": "flood_depth_surface",
-            "damage_level": "damage_level_surface",
-        },
-        inplace=True,
-    )
-    intersections["flood_depth_river"] = 0
-    intersections["damage_level_river"] = "no"
-    intersections["road_label"] = "road"
-    intersections.loc[intersections.hasTunnel == 1, "road_label"] = "tunnel"
-    intersections.loc[intersections.aveBridgeWidth > 0, "road_label"] == "bridge"
+    # batch process
+    intersections_list = []
+    for root, _, files in os.walk(
+        base_path.parent / "outputs" / "disruption_analysis" / "20241229"
+    ):
+        for file in files:
+            intersections_path = Path(root) / file
+            intersections_list.append(intersections_path)
 
-    # run damage analysis
-    intersections_with_damage = calculate_damage(
-        intersections, damage_curves, damage_values
-    )
-    intersections_with_damage = (
-        pd.concat(
-            [intersections_with_damage["id"], intersections_with_damage.iloc[:, -48:]],
-            axis=1,
+    for intersections_path in intersections_list:
+        flood_key = intersections_path.stem
+        out_path = (
+            base_path.parent
+            / "outputs"
+            / "damage_analysis"
+            / "20241229"
+            / f"{flood_key}_with_damage_values.csv"
         )
-        .fillna(0)
-        .groupby(by=["id"], as_index=False)
-        .sum()  # sum up damage values of all segments -> disrupted links
-    )
 
-    # export results
-    intersections_with_damage.to_csv(
-        base_path.parent
-        / "outputs"
-        / "disruption_analysis_1129"
-        / "disrupted_links_with_damage_values.csv",
-        index=False,
-    )
+        print(f"Calculate damages for {flood_key}...")
+        # format intersections
+        intersections = pd.read_parquet(intersections_path)
+        intersections = format_intersections(intersections, road_links)
+
+        # run damage analysis
+        intersections_with_damage = calculate_damage(
+            intersections, damage_curves, damage_values
+        )
+        intersections_with_damage = (
+            pd.concat(
+                [
+                    intersections_with_damage["e_id"],
+                    intersections_with_damage.iloc[:, -48:],
+                ],
+                axis=1,
+            )
+            .fillna(0)
+            .groupby(by=["e_id"], as_index=False)
+            .sum()  # sum up damage values of all segments -> disrupted links
+        )
+
+        # export results
+        intersections_with_damage.to_csv(out_path, index=False)
 
 
 if __name__ == "__main__":

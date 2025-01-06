@@ -32,14 +32,17 @@ def main(num_of_cpu):
     with open(base_path / "parameters" / "urban_speed_cap.json", "r") as f:
         urban_speed_dict = json.load(f)
 
-    # network links
+    # network links -> updated to links with bridges
     road_link_file = gpd.read_parquet(
-        base_path / "networks" / "road" / "GB_road_link_file.geoparquet"
-    )  # road links with "lanes" info
+        base_path / "networks" / "road" / "GB_road_links_with_bridges.gpq"
+    )
 
-    # od matrix (2021)
+    # od matrix (2021) -> updated to od with bridges
     od_node_2021 = pd.read_csv(
-        base_path / "census_datasets" / "od_matrix" / "od_gb_oa_2021_node_33p.csv"
+        base_path
+        / "census_datasets"
+        / "od_matrix"
+        / "od_gb_oa_2021_node_with_bridges_32p.csv"
     )
     od_node_2021["Car21"] = od_node_2021["Car21"] * 2
     # od_node_2021 = od_node_2021.head(10)  # for debug
@@ -115,16 +118,16 @@ def main(num_of_cpu):
         ],
     )
     print(f"The total simulation time: {time.time() - start_time}")
-
+    # breakpoint()
     # export files
     road_links.to_parquet(base_path.parent / "outputs" / "edge_flows_33p.pq")
     isolation.to_parquet(base_path.parent / "outputs" / "trip_isolation_33p.pq")
-    odpfc.to_parquet(base_path.parent / "odpfc_33p.pq")
+    odpfc.to_parquet(base_path.parent / "outputs" / "odpfc_33p.pq")
 
 
 if __name__ == "__main__":
     try:
         num_of_cpu = int(sys.argv[1])
+        main(num_of_cpu)
     except IndexError or NameError:
         print("Please enter the required number of CPUs!")
-    main(num_of_cpu)
