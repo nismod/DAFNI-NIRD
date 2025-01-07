@@ -595,32 +595,32 @@ def find_least_cost_path(
         output="epath",
     )  # paths: o - d(s)
     edge_paths = []
-    operating_costs = []
-    time_costs = []
-    toll_costs = []
+    # operating_costs = []
+    # time_costs = []
+    # toll_costs = []
     for path in paths:  # path: o - d
         edge_path = []
-        operating_cost = []
-        time_cost = []
-        toll_cost = []
+        # operating_cost = []
+        # time_cost = []
+        # toll_cost = []
         for p in path:  # p: each line segment
             edge_path.append(shared_network.es[p]["e_id"])
-            operating_cost.append(shared_network.es[p]["operating_cost"])
-            time_cost.append(shared_network.es[p]["time_cost"])
-            toll_cost.append(shared_network.es[p]["average_toll_cost"])
+            # operating_cost.append(shared_network.es[p]["operating_cost"])
+            # time_cost.append(shared_network.es[p]["time_cost"])
+            # toll_cost.append(shared_network.es[p]["average_toll_cost"])
         edge_paths.append(edge_path)  # a list of lists
-        operating_costs.append(sum(operating_cost))  # a list of values
-        time_costs.append(sum(time_cost))  # a list of values
-        toll_costs.append(sum(toll_cost))  # a list of values
+        # operating_costs.append(sum(operating_cost))  # a list of values
+        # time_costs.append(sum(time_cost))  # a list of values
+        # toll_costs.append(sum(toll_cost))  # a list of values
 
     return (
         origin_node,
         destination_nodes,
         edge_paths,
         flows,
-        operating_costs,
-        time_costs,
-        toll_costs,
+        # operating_costs,
+        # time_costs,
+        # toll_costs,
     )
 
 
@@ -739,7 +739,7 @@ def network_flow_model(
     time_equiv_cost = 0
     operating_cost = 0
     toll_cost = 0
-    odpfc = []
+    # odpfc = []
     isolation = []
 
     iter_flag = 1
@@ -789,18 +789,18 @@ def network_flow_model(
                 "destination",
                 "path",
                 "flow",
-                "operating_cost_per_flow",
-                "time_cost_per_flow",
-                "toll_cost_per_flow",
+                # "operating_cost_per_flow",
+                # "time_cost_per_flow",
+                # "toll_cost_per_flow",
             ],
         ).explode(
             [
                 "destination",
                 "path",
                 "flow",
-                "operating_cost_per_flow",
-                "time_cost_per_flow",
-                "toll_cost_per_flow",
+                # "operating_cost_per_flow",
+                # "time_cost_per_flow",
+                # "toll_cost_per_flow",
             ]
         )
 
@@ -858,7 +858,7 @@ def network_flow_model(
 
         if max_overflow <= 0:
             # update the origin-destination-path-cost matrix
-            odpfc.extend(temp_flow_matrix.to_numpy().tolist())
+            # odpfc.extend(temp_flow_matrix.to_numpy().tolist())
 
             # add/update edge key variables: flow/speed/capacity
             temp_edge_flow["acc_flow"] = (
@@ -885,22 +885,22 @@ def network_flow_model(
 
             # update travel costs: based on temp_flow_matrix
             # operating costs
-            temp_cost = (
-                temp_flow_matrix.operating_cost_per_flow * temp_flow_matrix.flow
-            ).sum()
-            operating_cost += temp_cost
-            # time costs
-            temp_cost = (
-                temp_flow_matrix.time_cost_per_flow * temp_flow_matrix.flow
-            ).sum()
-            time_equiv_cost += temp_cost
-            # toll costs
-            temp_cost = (
-                temp_flow_matrix.toll_cost_per_flow * temp_flow_matrix.flow
-            ).sum()
-            toll_cost += temp_cost
-            # total cost
-            total_cost += time_equiv_cost + operating_cost + toll_cost
+            # temp_cost = (
+            #     temp_flow_matrix.operating_cost_per_flow * temp_flow_matrix.flow
+            # ).sum()
+            # operating_cost += temp_cost
+            # # time costs
+            # temp_cost = (
+            #     temp_flow_matrix.time_cost_per_flow * temp_flow_matrix.flow
+            # ).sum()
+            # time_equiv_cost += temp_cost
+            # # toll costs
+            # temp_cost = (
+            #     temp_flow_matrix.toll_cost_per_flow * temp_flow_matrix.flow
+            # ).sum()
+            # toll_cost += temp_cost
+            # # total cost
+            # total_cost += time_equiv_cost + operating_cost + toll_cost
 
             print("Iteration stops: there is no edge overflow!")
             break
@@ -924,11 +924,11 @@ def network_flow_model(
         print(f"r = {r}")
 
         # update the origin-destination-path-cost matrix
-        odpfc.extend(
-            (temp_flow_matrix.assign(flow=temp_flow_matrix["flow"] * r))
-            .to_numpy()
-            .tolist()
-        )
+        # odpfc.extend(
+        #     (temp_flow_matrix.assign(flow=temp_flow_matrix["flow"] * r))
+        #     .to_numpy()
+        #     .tolist()
+        # )
 
         # add/update edge key variables: flows/speeds/capacities
         temp_edge_flow["adjusted_flow"] = temp_edge_flow["flow"] * r
@@ -955,22 +955,22 @@ def network_flow_model(
 
         # update travel costs based on temp_flow_matrix
         # operating costs
-        temp_cost = (
-            temp_flow_matrix.operating_cost_per_flow * temp_flow_matrix.flow * r
-        ).sum()
-        operating_cost += temp_cost
-        # time costs
-        temp_cost = (
-            temp_flow_matrix.time_cost_per_flow * temp_flow_matrix.flow * r
-        ).sum()
-        time_equiv_cost += temp_cost
-        # toll costs
-        temp_cost = (
-            temp_flow_matrix.toll_cost_per_flow * temp_flow_matrix.flow * r
-        ).sum()
-        toll_cost += temp_cost
-        # total cost
-        total_cost += time_equiv_cost + operating_cost + toll_cost
+        # temp_cost = (
+        #     temp_flow_matrix.operating_cost_per_flow * temp_flow_matrix.flow * r
+        # ).sum()
+        # operating_cost += temp_cost
+        # # time costs
+        # temp_cost = (
+        #     temp_flow_matrix.time_cost_per_flow * temp_flow_matrix.flow * r
+        # ).sum()
+        # time_equiv_cost += temp_cost
+        # # toll costs
+        # temp_cost = (
+        #     temp_flow_matrix.toll_cost_per_flow * temp_flow_matrix.flow * r
+        # ).sum()
+        # toll_cost += temp_cost
+        # # total cost
+        # total_cost += time_equiv_cost + operating_cost + toll_cost
 
         # update remaining od flows
         remain_od["Car21"] = remain_od["Car21"] * (1 - r)
@@ -994,4 +994,4 @@ def network_flow_model(
     print(f"total operating cost is (£): {operating_cost}")
     print(f"total toll cost is (£): {toll_cost}")
 
-    return road_links, isolation, odpfc
+    return road_links, isolation  # , odpfc

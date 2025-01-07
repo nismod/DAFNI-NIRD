@@ -7,7 +7,7 @@ import pandas as pd
 import geopandas as gpd  # type: ignore
 
 from nird.utils import load_config
-import nird.road_revised as func
+import nird.road_validation as func
 
 import json
 import warnings
@@ -42,7 +42,7 @@ def main(num_of_cpu):
         base_path
         / "census_datasets"
         / "od_matrix"
-        / "od_gb_oa_2021_node_with_bridges_32p.csv"
+        / "od_gb_oa_2021_node_with_bridges.csv"
     )
     od_node_2021["Car21"] = od_node_2021["Car21"] * 2
     # od_node_2021 = od_node_2021.head(10)  # for debug
@@ -72,7 +72,11 @@ def main(num_of_cpu):
     network = func.create_igraph_network(road_links)
 
     # run flow simulation
-    road_links, isolation, odpfc = func.network_flow_model(
+    (
+        road_links,
+        isolation,
+        # odpfc,
+    ) = func.network_flow_model(
         road_links,
         network,
         od_node_2021,
@@ -80,30 +84,30 @@ def main(num_of_cpu):
         num_of_cpu,
     )
 
-    odpfc = pd.DataFrame(
-        odpfc,
-        columns=[
-            "origin_node",
-            "destination_node",
-            "path",
-            "flow",
-            "operating_cost_per_flow",
-            "time_cost_per_flow",
-            "toll_cost_per_flow",
-        ],
-    )
+    # odpfc = pd.DataFrame(
+    #     odpfc,
+    #     columns=[
+    #         "origin_node",
+    #         "destination_node",
+    #         "path",
+    #         "flow",
+    #         "operating_cost_per_flow",
+    #         "time_cost_per_flow",
+    #         "toll_cost_per_flow",
+    #     ],
+    # )
 
-    odpfc.path = odpfc.path.apply(tuple)
-    odpfc = odpfc.groupby(
-        by=["origin_node", "destination_node", "path"], as_index=False
-    ).agg(
-        {
-            "flow": "sum",
-            "operating_cost_per_flow": "first",
-            "time_cost_per_flow": "first",
-            "toll_cost_per_flow": "first",
-        }
-    )
+    # odpfc.path = odpfc.path.apply(tuple)
+    # odpfc = odpfc.groupby(
+    #     by=["origin_node", "destination_node", "path"], as_index=False
+    # ).agg(
+    #     {
+    #         "flow": "sum",
+    #         "operating_cost_per_flow": "first",
+    #         "time_cost_per_flow": "first",
+    #         "toll_cost_per_flow": "first",
+    #     }
+    # )
 
     isolation = pd.DataFrame(
         isolation,
@@ -114,11 +118,11 @@ def main(num_of_cpu):
         ],
     )
     print(f"The total simulation time: {time.time() - start_time}")
-    # breakpoint()
+    breakpoint()
     # export files
-    road_links.to_parquet(base_path.parent / "outputs" / "edge_flows_32p.gpq")
-    isolation.to_parquet(base_path.parent / "outputs" / "trip_isolation_32p.pq")
-    odpfc.to_parquet(base_path.parent / "outputs" / "odpfc_32p.pq")
+    road_links.to_parquet(base_path.parent / "outputs" / "edge_flows_validation.gpq")
+    isolation.to_parquet(base_path.parent / "outputs" / "trip_isolation_validation.pq")
+    # odpfc.to_parquet(base_path.parent / "outputs" / "odpfc_test.pq")
 
 
 if __name__ == "__main__":
