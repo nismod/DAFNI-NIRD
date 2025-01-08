@@ -92,13 +92,22 @@ def ordinary_road_recovery(
 
 
 def main(depth_thres, number_of_cpu):
-    """Inputs:
-    - model parameters
-    - road_links with added attributes:
+    """Main function:
+
+    Parameters
+    ----------
+    Model Parameters
+    odpfc_32p.pq: base scenario output
+    road_links_x.gpq: disruption analysis output
         [disruption analysis] road_label, flood_depth_max, damage_level_max,
         [base scenario analysis] current_capacity, current_speed,
         [config] free_flow_speed, min_flow_speeds, max_speed, initial_flow_speeds
-    - odpfc
+
+    Returns
+    -------
+    Daily edge flows during the recovery period (D-0 to D-110).
+    Isolated trips after daily recovery (D-0 to D-110).
+
     """
     # bridge recovery rates
     with open(base_path / "parameters" / "capt_minor.json", "r") as f:

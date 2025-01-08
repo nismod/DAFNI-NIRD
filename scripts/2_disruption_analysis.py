@@ -22,6 +22,20 @@ def intersect_features_with_raster(
     features,
     flood_type,
 ):
+    """Intersects vector features with a raster dataset and computes flood depth for
+    each intersected feature.
+
+    Parameters:
+        raster_path (str): Path to the raster file containing flood data.
+        raster_key (str): Identifier for the raster dataset.
+        features (GeoDataFrame): Vector features (e.g., linestrings).
+        flood_type (str): Type of flood (e.g., "surface" or "river").
+
+    Returns:
+        GeoDataFrame: Intersected features with flood depth values,
+        reprojected to EPSG:27700.
+
+    """
     print(f"Intersecting features with raster {raster_key}...")
     # read the raster data: depth (meter)
     raster = io.read_raster_band_data(raster_path)
@@ -84,6 +98,26 @@ def compute_damage_level_on_flooded_roads(
     road_label,
     fldDepth,
 ):
+    """
+    Computes the damage level of roads based on flood type, road classification,
+    and flood depth.
+
+    Parameters:
+        fldType (str): Type of flood, either "surface" or "river".
+        road_classification (str): Motorway, A Road or B Road.
+        trunk_road (bool): Whether the road is a trunk road (True/False).
+        road_label (str): Label of the road, e.g., road, tunnel, bridge.
+        fldDepth (float): Depth of the flood in metres.
+
+    Returns:
+        str: Damage level as one of the following categories:
+            - "no": No damage
+            - "minor": Minor damage
+            - "moderate": Moderate damage
+            - "extensive": Extensive damage
+            - "severe": Severe damage
+    """
+
     depth = fldDepth * 100  # cm
     if fldType == "surface":
         if road_label == "tunnel" and (
@@ -325,11 +359,21 @@ def features_with_damage(
 
 
 def main(depth_thres):
-    """Inputs:
-    - base scenario: edge_flows_32p.gpq
-    - network: GB_road_links_with_bridges.gpq
-    - flood event map: Thames Lloyd's RDS (RASTER)
-    - clip mask: Thames Lloyd's RDS (VECTOR)
+    """Main function
+
+    Parameters
+    ----------
+    edge_flows_32p.gpq: base scenario output
+    GB_road_links_with_bridges.gpq: network element
+    Thames Lloyd's RDS (RASTER): JBA Flood Map
+    Thames Lloyd's RDS (Vector): Clip file
+
+    Returns
+    -------
+    intersections_x.pq: feature intersections with flood depth and damage level
+    road_links_x.gpq: with maxmimum flood depth and damage level by aggregating the
+        corresponding intersections.
+
     """
     # base scenario simulation results
     base_scenario_links = gpd.read_parquet(

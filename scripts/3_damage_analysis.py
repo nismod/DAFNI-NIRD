@@ -138,10 +138,6 @@ def compute_damage_values(
         - max_cost (float): The maximum estimated damage cost.
         - mean_cost (float): The mean estimated damage cost.
 
-    Raises:
-    -------
-    AssertionError
-        If `road_label` is "bridge" but `bridge_width` is not provided.
     """
 
     def compute_bridge_damage(length, width, flood_type, damage_level):
@@ -357,11 +353,19 @@ def format_intersections(intersections, road_links):
 
 
 def main(depth_thres):
-    """Inputs:
-    - damage ratios
-    - damage values
-    - road links
-    - intersections in module 2
+    """Main function
+
+    Parameters
+    ----------
+    damage_ratio_road_flood.xlsx: damage curves
+    damage_cost_road_flood_uk.xlsx: asset damage values
+    GB_road_links_with_bridges.gpq: network links
+    intersections: module 2 output.
+
+    Returns
+    -------
+    intersections_with_damages (min, max, mean)
+
     """
     # damage curves
     """
