@@ -1,5 +1,6 @@
 # %%
 import os
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -14,8 +15,7 @@ import warnings
 
 warnings.simplefilter("ignore")
 
-base_path = Path(load_config()["paths"]["base_path"])
-raster_path = Path(load_config()["paths"]["JBA_data"])
+base_path = Path(load_config()["paths"]["soge_clusters"])
 
 
 # %%
@@ -356,12 +356,12 @@ def format_intersections(intersections, road_links):
     return intersections_gp
 
 
-def main():
+def main(depth_thres):
     """Inputs:
     - damage ratios
     - damage values
+    - road links
     - intersections in module 2
-    - road links' attributes
     """
     # damage curves
     """
@@ -369,7 +369,7 @@ def main():
     2 damage curvse for B roads
     """
     damages_ratio_df = pd.read_excel(
-        base_path / "tables" / "damage_ratio_road_flood.xlsx"
+        base_path / "damage_curves" / "damage_ratio_road_flood.xlsx"
     )
     damage_curves = create_damage_curves(damages_ratio_df)
 
@@ -379,31 +379,34 @@ def main():
     min, max, mean damage values
     """
     road_links = gpd.read_parquet(
-        base_path / "networks" / "road" / "GB_road_links_with_bridges.gpq"
+        base_path / "networks" / "GB_road_links_with_bridges.gpq"
     )
     road_damage_file = pd.read_excel(
-        base_path / "tables" / "damage_values.xlsx", sheet_name="roads"
+        base_path / "asset_costs" / "damage_cost_road_flood_uk.xlsx", sheet_name="roads"
     )
     tunnel_damage_file = pd.read_excel(
-        base_path / "tables" / "damage_values.xlsx", sheet_name="tunnels"
+        base_path / "asset_costs" / "damage_cost_road_flood_uk.xlsx",
+        sheet_name="tunnels",
     )
     bridge_surface_damage_file = pd.read_excel(
-        base_path / "tables" / "damage_values.xlsx", sheet_name="bridges-surface"
+        base_path / "asset_costs" / "damage_cost_road_flood_uk.xlsx",
+        sheet_name="bridges-surface",
     )
     bridge_river_damage_file = pd.read_excel(
-        base_path / "tables" / "damage_values.xlsx", sheet_name="bridges-river"
+        base_path / "asset_costs" / "damage_cost_road_flood_uk.xlsx",
+        sheet_name="bridges-river",
     )
     dv_road_dict = defaultdict(lambda: defaultdict(float))
     for row in road_damage_file.itertuples():
-        dv_road_dict[row.label]["min"] = row.min
-        dv_road_dict[row.label]["max"] = row.max
-        dv_road_dict[row.label]["mean"] = row.mean
+        dv_road_dict[row.label]["min"] = row.Min
+        dv_road_dict[row.label]["max"] = row.Max
+        dv_road_dict[row.label]["mean"] = row.Mean
 
     dv_tunnel_dict = defaultdict(lambda: defaultdict(float))
     for row in tunnel_damage_file.itertuples():
-        dv_tunnel_dict[row.label]["min"] = row.min
-        dv_tunnel_dict[row.label]["max"] = row.max
-        dv_tunnel_dict[row.label]["mean"] = row.mean
+        dv_tunnel_dict[row.label]["min"] = row.Min
+        dv_tunnel_dict[row.label]["max"] = row.Max
+        dv_tunnel_dict[row.label]["mean"] = row.Mean
 
     dv_bridge_surface_dict = defaultdict(lambda: defaultdict(float))
     for row in bridge_surface_damage_file.itertuples():
@@ -428,7 +431,11 @@ def main():
     # batch process
     intersections_list = []
     for root, _, files in os.walk(
-        base_path.parent / "outputs" / "disruption_analysis" / "20241229"
+        base_path.parent
+        / "results"
+        / "disruption_analysis"
+        / str(depth_thres)
+        / "intersections"
     ):
         for file in files:
             intersections_path = Path(root) / file
@@ -438,9 +445,9 @@ def main():
         flood_key = intersections_path.stem
         out_path = (
             base_path.parent
-            / "outputs"
+            / "results"
             / "damage_analysis"
-            / "20241229"
+            / str(depth_thres)
             / f"{flood_key}_with_damage_values.csv"
         )
 
@@ -471,4 +478,12 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        depth_thres = int(sys.argv[1])
+    except (IndexError, ValueError):
+        print(
+            "Error: Please provide the flood depth for road closure (e.g., 30 or "
+            "60 cm)!"
+        )
+        sys.exit(1)
+    main(depth_thres)

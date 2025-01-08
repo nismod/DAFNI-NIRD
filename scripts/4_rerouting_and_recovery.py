@@ -1,4 +1,5 @@
 # %%
+import sys
 from pathlib import Path
 from functools import partial
 
@@ -15,7 +16,7 @@ from tqdm import tqdm
 
 warnings.simplefilter("ignore")
 
-base_path = Path(load_config()["paths"]["base_path"])
+base_path = Path(load_config()["paths"]["soge_clusters"])
 tqdm.pandas()
 
 
@@ -90,13 +91,14 @@ def ordinary_road_recovery(
     return acc_capacity, acc_speed
 
 
-def main():
+def main(depth_thres, number_of_cpu):
     """Inputs:
+    - model parameters
     - road_links with added attributes:
         [disruption analysis] road_label, flood_depth_max, damage_level_max,
         [base scenario analysis] current_capacity, current_speed,
         [config] free_flow_speed, min_flow_speeds, max_speed, initial_flow_speeds
-    - odpfc [base scenario output]
+    - odpfc
     """
     # bridge recovery rates
     with open(base_path / "parameters" / "capt_minor.json", "r") as f:
@@ -143,10 +145,11 @@ def main():
     # road links (with 8 added columns)
     road_links = gpd.read_parquet(
         base_path.parent
-        / "outputs"
+        / "results"
         / "disruption_analysis"
-        / "20241229"
-        / "road_links_7.gpq"  # 2007 Summer Flood - July
+        / str(depth_thres)
+        / "links"
+        / "road_links_17.gpq"  # Thames Lloyd's RDS
     )  # input1
     road_links = func.edge_reclassification_func(road_links)
     road_links["designed_capacity"] = (
@@ -171,7 +174,8 @@ def main():
     # extract the disrupted od matrix
     partial_have_common_items = partial(have_common_items, list2=disrupted_links)
     od_path_file = pd.read_parquet(
-        base_path.parent / "outputs" / "odpfc_32p.pq", engine="fastparquet"
+        base_path.parent / "results" / "base_scenario" / "odpfc_32p.pq",
+        engine="fastparquet",
     )  # input2
     od_path_file["disrupted"] = np.vectorize(partial_have_common_items)(
         od_path_file.path
@@ -251,9 +255,9 @@ def main():
             network,
             disrupted_od,
             flow_breakpoint_dict,
-            num_of_cpu=5,  # system input
+            num_of_cpu=number_of_cpu,  # system input
         )
-        breakpoint()
+
         # update key variables
         road_links = road_links.set_index("e_id")
         road_links.update(
@@ -273,31 +277,63 @@ def main():
                 "flow",
             ],
         )
+
+        # export results
         if isolation_df.empty:
+            road_links.to_parquet(
+                base_path.parent
+                / "results"
+                / "rerouting_analysis"
+                / str(depth_thres)
+                / "17"
+                / f"edge_flows_{day}.gpq"
+            )
+            isolation_df.to_csv(
+                base_path.parent
+                / "results"
+                / "rerouting_analysis"
+                / str(depth_thres)
+                / "17"
+                / f"trip_isolations_{day}.csv",
+                index=False,
+            )
             print("There is no disrupted flows!")
             break
-
-        # export rerouting results
         else:
             if day in [0, 1, 2, 3, 4, 5, 15, 30, 60, 90, 110]:
                 road_links.to_parquet(
                     base_path.parent
-                    / "outputs"
+                    / "results"
                     / "rerouting_analysis"
-                    / "20241229"
-                    / "7"
+                    / str(depth_thres)
+                    / "17"
                     / f"edge_flows_{day}.gpq"
                 )
                 isolation_df.to_csv(
                     base_path.parent
-                    / "outputs"
+                    / "results"
                     / "rerouting_analysis"
-                    / "20241229"
-                    / "7"
+                    / str(depth_thres)
+                    / "17"
                     / f"trip_isolations_{day}.csv",
                     index=False,
                 )
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        depth_thres = int(sys.argv[1])
+    except (IndexError, ValueError):
+        print(
+            "Error: Please provide the flood depth for road closure (e.g., 30 or "
+            "60 cm) as the first argument!"
+        )
+        sys.exit(1)
+
+    try:
+        number_of_cpu = int(sys.argv[2])
+    except (IndexError, ValueError):
+        print("Error: Please provide the number of CPUs as the second argument!")
+        sys.exit(1)
+
+    main(depth_thres, number_of_cpu)

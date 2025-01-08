@@ -7,13 +7,12 @@ from collections import defaultdict
 
 from snail import io, intersection
 from nird.utils import load_config
-
 import warnings
 
 warnings.filterwarnings("ignore")
 
-base_path = Path(load_config()["paths"]["base_path"])
-raster_path = Path(load_config()["paths"]["JBA_data"]) / "completed"
+base_path = Path(load_config()["paths"]["soge_clusters"])
+raster_path = base_path / "hazards" / "JBA_data"
 
 
 # %%
@@ -325,16 +324,16 @@ def features_with_damage(
     return features
 
 
-def main():
+def main(depth_thres):
     """Inputs:
-    - base flow simulation
-    - road_links
-    - flood event map
-    - clip mask
+    - base scenario: edge_flows_32p.gpq
+    - network: GB_road_links_with_bridges.gpq
+    - flood event map: Thames Lloyd's RDS (RASTER)
+    - clip mask: Thames Lloyd's RDS (VECTOR)
     """
     # base scenario simulation results
     base_scenario_links = gpd.read_parquet(
-        base_path.parent / "outputs" / "edge_flows_32p.pq"
+        base_path.parent / "results" / "base_scenario" / "edge_flows_32p.gpq"
     )
     base_scenario_links.rename(
         columns={
@@ -388,18 +387,22 @@ def main():
             # event_key = "_".join(
             #     Path(event_path).stem.split("_")[:2]
             # )  # rename events under "both" category
-            event_key = event_path.split("\\")[6].split("_")[0]
+            # event_key = event_path.split("\\")[6].split("_")[0]
+            event_key = Path(event_path).parts[9].split("_")[0]
             event_dict[event_key][flood_type].append(event_path)
-
+    print(event_dict)
     # analysis
     for flood_key, v in event_dict.items():
         # road links
         road_links = gpd.read_parquet(
-            base_path / "networks" / "road" / "GB_road_links_with_bridges.gpq"
+            base_path / "networks" / "GB_road_links_with_bridges.gpq"
         )
 
         # out path
-        out_path = base_path.parent / "outputs" / "disruption_analysis" / "20241229"
+        out_path = (
+            base_path.parent / "results" / "disruption_analysis" / str(depth_thres)
+        )
+
         intersections = gpd.GeoDataFrame(
             columns=["e_id", "length", "index_i", "index_j"]
         )
@@ -458,7 +461,7 @@ def main():
             damage_level_dict_reverse,
         )
 
-        # max speed estimation
+        # max_speed estimation
         """
         Uncertainties of flood depth threshold for road closure (cm): 15, 30, 60
         """
@@ -483,7 +486,7 @@ def main():
             lambda row: compute_maximum_speed_on_flooded_roads(
                 row["flood_depth_max"],
                 row["free_flow_speeds"],
-                threshold=30,
+                threshold=depth_thres,
             ),
             axis=1,
         )
@@ -491,4 +494,12 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        depth_thres = int(sys.argv[1])
+    except (IndexError, ValueError):
+        print(
+            "Error: Please provide the flood depth for road closure (e.g., 30 or "
+            "60 cm)!"
+        )
+        sys.exit(1)
+    main(depth_thres)

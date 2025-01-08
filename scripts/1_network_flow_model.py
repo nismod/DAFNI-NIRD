@@ -14,7 +14,7 @@ import warnings
 
 warnings.simplefilter("ignore")
 
-base_path = Path(load_config()["paths"]["base_path"])
+base_path = Path(load_config()["paths"]["soge_clusters"])
 
 
 # %%
@@ -34,18 +34,14 @@ def main(num_of_cpu):
 
     # network links -> updated to links with bridges
     road_link_file = gpd.read_parquet(
-        base_path / "networks" / "road" / "GB_road_links_with_bridges.gpq"
+        base_path / "networks" / "GB_road_links_with_bridges.gpq"
     )
 
     # od matrix (2021) -> updated to od with bridges
     od_node_2021 = pd.read_csv(
-        base_path
-        / "census_datasets"
-        / "od_matrix"
-        / "od_gb_oa_2021_node_with_bridges_32p.csv"
+        base_path / "census_datasets" / "od_gb_oa_2021_node_with_bridges_32p.csv"
     )
     od_node_2021["Car21"] = od_node_2021["Car21"] * 2
-    # od_node_2021 = od_node_2021.head(10)  # for debug
     print(f"total flows: {od_node_2021.Car21.sum()}")
 
     # initialise road links
@@ -114,16 +110,21 @@ def main(num_of_cpu):
         ],
     )
     print(f"The total simulation time: {time.time() - start_time}")
-    # breakpoint()
+
     # export files
-    road_links.to_parquet(base_path.parent / "outputs" / "edge_flows_32p.gpq")
-    isolation.to_parquet(base_path.parent / "outputs" / "trip_isolation_32p.pq")
-    odpfc.to_parquet(base_path.parent / "outputs" / "odpfc_32p.pq")
+    road_links.to_parquet(
+        base_path.parent / "results" / "base_scenario" / "edge_flows_32p.gpq"
+    )
+    isolation.to_parquet(
+        base_path.parent / "results" / "base_scenario" / "trip_isolation_32p.pq"
+    )
+    odpfc.to_parquet(base_path.parent / "results" / "base_scenario" / "odpfc_32p.pq")
 
 
 if __name__ == "__main__":
     try:
-        num_of_cpu = int(sys.argv[1])
-        main(num_of_cpu)
-    except IndexError or NameError:
-        print("Please enter the required number of CPUs!")
+        num_of_cpu = int(sys.argv[2])
+    except (IndexError, ValueError):
+        print("Error: Please provide the number of CPUs!")
+        sys.exit(1)
+    main(num_of_cpu)
