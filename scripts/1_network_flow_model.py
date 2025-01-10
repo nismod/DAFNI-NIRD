@@ -1,24 +1,44 @@
-# %%
-from pathlib import Path
 import sys
 import time
+import json
+import warnings
+from pathlib import Path
 
 import pandas as pd
-import geopandas as gpd  # type: ignore
+import geopandas as gpd
 
 from nird.utils import load_config
 import nird.road_revised as func
 
-import json
-import warnings
-
 warnings.simplefilter("ignore")
-
 base_path = Path(load_config()["paths"]["soge_clusters"])
 
 
-# %%
 def main(num_of_cpu):
+    """
+    Model Inputs:
+    - Model parameters.
+    - GB_road_links_with_bridges.gpq:
+        A file containing road network data with additional edge attributes:
+        - Free-flow speeds: Baseline speeds under normal conditions.
+        - Minimum speeds: Defined separately for urban and rural areas.
+        - Maximum speeds: Speeds on flooded roads (used for disruption analysis only).
+        - Initial speeds: Starting speeds for the simulation.
+    - od_gb_oa_2021_node_with_bridges.csv (for validation)
+        or od_gb_oa_2021_node_with_bridges_32p.csv
+
+    Model Outputs:
+    - road_links.gpq:
+        Road network data enriched with simulation results:
+        - acc_flow: Accumulated traffic flow on road links.
+        - acc_capacity: remaining capacity of road links.
+        - acc_speed: current speeds on road links.
+    - isolation.pq:
+        Data on isolated trips resulting from network disruptions.
+    - odpfc.pq:
+        Origin-destination-path-flow-cost matrix for evaluating network performance.
+    """
+
     start_time = time.time()
     # model parameters
     with open(base_path / "parameters" / "flow_breakpoint_dict.json", "r") as f:
@@ -45,17 +65,6 @@ def main(num_of_cpu):
     print(f"total flows: {od_node_2021.Car21.sum()}")
 
     # initialise road links
-    """ adding columns:
-    - edge properties:
-        free-flow speeds
-        min speeds (urban/rural)
-        max speeds (on flooded roads -> for disruption analysis only)
-        initial speeds
-    - edge variables:
-        acc_speed
-        acc_flow
-        acc_capacity
-    """
     road_links = func.edge_init(
         road_link_file,
         flow_capacity_dict,

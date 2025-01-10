@@ -1,5 +1,5 @@
-# %%
 import sys
+from typing import Dict
 from pathlib import Path
 
 import geopandas as gpd
@@ -15,27 +15,32 @@ base_path = Path(load_config()["paths"]["soge_clusters"])
 raster_path = base_path / "hazards" / "JBA_data"
 
 
-# %%
 def intersect_features_with_raster(
-    raster_path,
-    raster_key,
-    features,
-    flood_type,
-):
+    raster_path: str,
+    raster_key: str,
+    features: gpd.GeoDataFrame,
+    flood_type: str,
+) -> gpd.GeoDataFrame:
     """Intersects vector features with a raster dataset and computes flood depth for
     each intersected feature.
 
-    Parameters:
-        raster_path (str): Path to the raster file containing flood data.
-        raster_key (str): Identifier for the raster dataset.
-        features (GeoDataFrame): Vector features (e.g., linestrings).
-        flood_type (str): Type of flood (e.g., "surface" or "river").
+    Parameters
+    ----------
+    raster_path: str
+        Path to the raster file containing flood data.
+    raster_key: str
+        Identifier for the raster dataset.
+    features: gpd.GeoDataFrame
+        Vector features (e.g., linestrings).
+    flood_type: str
+        Type of flood (e.g., "surface" or "river").
 
-    Returns:
-        GeoDataFrame: Intersected features with flood depth values,
-        reprojected to EPSG:27700.
-
+    Returns
+    -------
+    gpd.GeoDataFrame
+        Intersected features with flood depth values, reprojected to EPSG:27700.
     """
+
     print(f"Intersecting features with raster {raster_key}...")
     # read the raster data: depth (meter)
     raster = io.read_raster_band_data(raster_path)
@@ -60,10 +65,27 @@ def intersect_features_with_raster(
 
 
 def clip_features(
-    features,
-    clip_path,
-    raster_key,
-):
+    features: gpd.GeoDataFrame,
+    clip_path: str,
+    raster_key: str,
+) -> gpd.GeoDataFrame:
+    """Extract features to the raster extent.
+
+    Parameters
+    ----------
+    features: gpd.GeoDataFrame
+        Contains the spatial features to be clipped.
+    clip_path: str
+        Path to the file containing the clipping features (shapefile).
+    raster_key: str
+        A descriptive raster key.
+
+    Returns
+    -------
+    gpd.GeoDataFrame
+        Contains the features clipped to the extent of the clip layer.
+    """
+
     print(f"Clipping features based on {raster_key}...")
     clips = gpd.read_file(clip_path, engine="pyogrio")
     if clips.crs != "epsg:4326":
@@ -78,10 +100,27 @@ def clip_features(
 
 
 def compute_maximum_speed_on_flooded_roads(
-    depth,
-    free_flow_speed,
+    depth: float,
+    free_flow_speed: float,
     threshold=30,
-):
+) -> float:
+    """Compute the maximum speed on flooded roads based on flood depth.
+
+    Parameters
+    ----------
+    depth: float
+        The depth of floodwater in meters.
+    free_flow_speed: float
+        The free-flow speed of the road under normal conditions in miles.
+    threshold: float, optional
+        The depth threshold in centimetres for road closure (default is 30 cm).
+
+    Returns
+    -------
+    float
+        The maximum speed on the flooded road in miles per hour (mph).
+    """
+
     depth = depth * 100  # m to cm
     if depth < threshold:  # cm
         # value = 0.0009 * depth**2 - 0.5529 * depth + 86.9448  # kmph
@@ -92,30 +131,38 @@ def compute_maximum_speed_on_flooded_roads(
 
 
 def compute_damage_level_on_flooded_roads(
-    fldType,
-    road_classification,
-    trunk_road,
-    road_label,
-    fldDepth,
-):
+    fldType: str,
+    road_classification: str,
+    trunk_road: str,
+    road_label: str,
+    fldDepth: float,
+) -> str:
     """
     Computes the damage level of roads based on flood type, road classification,
     and flood depth.
 
-    Parameters:
-        fldType (str): Type of flood, either "surface" or "river".
-        road_classification (str): Motorway, A Road or B Road.
-        trunk_road (bool): Whether the road is a trunk road (True/False).
-        road_label (str): Label of the road, e.g., road, tunnel, bridge.
-        fldDepth (float): Depth of the flood in metres.
+    Parameters
+    ----------
+    fldType: str
+        Type of flood, either "surface" or "river".
+    road_classification: str
+        Motorway, A Road or B Road.
+    trunk_road: bool
+        Whether the road is a trunk road (True/False).
+    road_label: str
+        Label of the road, e.g., road, tunnel, bridge.
+    fldDepth: float
+        Depth of the flood in metres.
 
-    Returns:
-        str: Damage level as one of the following categories:
-            - "no": No damage
-            - "minor": Minor damage
-            - "moderate": Moderate damage
-            - "extensive": Extensive damage
-            - "severe": Severe damage
+    Returns
+    -------
+    str:
+        Damage level as one of the following categories:
+        - "no": No damage
+        - "minor": Minor damage
+        - "moderate": Moderate damage
+        - "extensive": Extensive damage
+        - "severe": Severe damage
     """
 
     depth = fldDepth * 100  # cm
@@ -159,6 +206,7 @@ def compute_damage_level_on_flooded_roads(
                 return "minor"
             else:
                 return "moderate"
+
     elif fldType == "river":
         if road_label == "tunnel" and (
             road_classification == "Motorway"
@@ -213,16 +261,25 @@ def intersections_with_damage(
     """
     Calculate flood depth and damage levels for individual road segments.
 
-    Parameters:
-        road_links (GeoDataFrame): Road links with geometries and classifications.
-        flood_key (str): Key identifier for the flood dataset.
-        flood_type (str): Type of flood ("surface" or "river").
-        flood_path (str): Path to the flood raster file.
-        clip_path (str): Path to the vector file used for clipping.
+    Parameters
+    ----------
+    road_links: gpd.GeoDataFrame
+         Road links with geometries and classifications.
+    flood_key: str
+        Key identifier for the flood dataset.
+    flood_type: str
+        Type of flood ("surface" or "river").
+    flood_path: str
+        Path to the flood raster file.
+    clip_path: str
+        Path to the vector file used for clipping.
 
-    Returns:
-        GeoDataFrame: Intersections with calculated flood depths and damage levels.
+    Returns
+    -------
+    gpd.GeoDataFrame
+        Intersections with calculated flood depths and damage levels.
     """
+
     # Clip road links with features in the provided vector file
     road_links = road_links.to_crs("epsg:4326")
     clipped_features = clip_features(road_links, clip_path, flood_key)
@@ -277,23 +334,31 @@ def intersections_with_damage(
 
 
 def features_with_damage(
-    features,
-    intersections,
-    damage_level_dict,
-    damage_level_dict_reverse,
-):
+    features: gpd.GeoDataFrame,
+    intersections: gpd.GeoDataFrame,
+    damage_level_dict: Dict,
+    damage_level_dict_reverse: Dict,
+) -> gpd.GeoDataFrame:
     """
     Calculate damage levels and maximum flood depth for road links.
 
-    Parameters:
-        features (GeoDataFrame): GeoDataFrame of road links.
-        intersections (GeoDataFrame): GeoDataFrame of intersections with flood data.
-        damage_level_dict (dict): Mapping of damage levels to numerical values.
-        damage_level_dict_reverse (dict): Reverse mapping of numerical values to damage levels.
+    Parameters
+    ----------
+    features: gpd.GeoDataFrame
+        GeoDataFrame of road links.
+    intersections: gpd.GeoDataFrame
+        GeoDataFrame of intersections with flood data.
+    damage_level_dict: Dict
+        Mapping of damage levels to numerical values.
+    damage_level_dict_reverse: Dict
+        Reverse mapping of numerical values to damage levels.
 
-    Returns:
-        GeoDataFrame: Updated features with maximum flood depth and damage level.
+    Returns
+    -------
+    gpd.GeoDataFrame
+        Updated features with maximum flood depth and damage level.
     """
+
     # Flood depth
     if (
         "flood_depth_surface" in intersections.columns
@@ -361,20 +426,20 @@ def features_with_damage(
 def main(depth_thres):
     """Main function
 
-    Parameters
-    ----------
-    edge_flows_32p.gpq: base scenario output
-    GB_road_links_with_bridges.gpq: network element
-    Thames Lloyd's RDS (RASTER): JBA Flood Map
-    Thames Lloyd's RDS (Vector): Clip file
+    Model Inputs
+    ------
+    - edge_flows_32p.gpq: base scenario output
+    - GB_road_links_with_bridges.gpq: network element
+    - Thames Lloyd's RDS (RASTER): JBA Flood Map
+    - Thames Lloyd's RDS (Vector): Clip file
 
-    Returns
+    Model Outputs
     -------
-    intersections_x.pq: feature intersections with flood depth and damage level
-    road_links_x.gpq: with maxmimum flood depth and damage level by aggregating the
+    - intersections_x.pq: feature intersections with flood depth and damage level
+    - road_links_x.gpq: with maxmimum flood depth and damage level by aggregating the
         corresponding intersections.
-
     """
+
     # base scenario simulation results
     base_scenario_links = gpd.read_parquet(
         base_path.parent / "results" / "base_scenario" / "edge_flows_32p.gpq"

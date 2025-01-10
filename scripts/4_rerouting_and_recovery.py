@@ -1,41 +1,40 @@
-# %%
+import json
 import sys
-from pathlib import Path
+import warnings
 from functools import partial
+from pathlib import Path
+from typing import Dict, List, Tuple
 
 import geopandas as gpd
-import pandas as pd
 import numpy as np
-
-from nird.utils import load_config
-import nird.road_revised as func
-
-import json
-import warnings
+import pandas as pd
 from tqdm import tqdm
 
-warnings.simplefilter("ignore")
+import nird.road_revised as func
+from nird.utils import load_config
 
+warnings.simplefilter("ignore")
 base_path = Path(load_config()["paths"]["soge_clusters"])
 tqdm.pandas()
 
 
-# %%
-def have_common_items(list1, list2):
+def have_common_items(list1: List, list2: List) -> bool:
     return bool(set(list1) & set(list2))
 
 
 def bridge_recovery(
-    day,
-    damage_level,
-    designed_capacity,
-    current_speed,
-    initial_speed,
-    max_speed,
-    bridge_recovery_dict,
-    acc_speed,
-    acc_capacity,
-):
+    day: int,
+    damage_level: str,
+    designed_capacity: float,
+    current_speed: float,
+    initial_speed: float,
+    max_speed: float,
+    bridge_recovery_dict: Dict,
+    acc_speed: float,
+    acc_capacity: float,
+) -> Tuple[float, float]:
+    """Compute the daily recovery of brideg capacity and speed based on
+    damage level and recovery rates."""
     if day == 0:  # occurrence of damage
         acc_speed = min(current_speed, max_speed)
         if damage_level == ["no", "minor", "moderate"]:
@@ -58,16 +57,19 @@ def bridge_recovery(
 
 
 def ordinary_road_recovery(
-    day,
-    damage_level,
-    designed_capacity,
-    current_speed,
-    initial_speed,
-    max_speed,
-    road_recovery_dict,
-    acc_speed,
-    acc_capacity,
-):
+    day: int,
+    damage_level: str,
+    designed_capacity: float,
+    current_speed: float,
+    initial_speed: float,
+    max_speed: float,
+    road_recovery_dict: Dict,
+    acc_speed: float,
+    acc_capacity: float,
+) -> Tuple[float, float]:
+    """Compute the daily recovery of ordinary road capacity and speed based on
+    damage level and recovery rates."""
+
     if day == 0:
         acc_speed = min(current_speed, max_speed)
         if damage_level in ["no", "minor", "moderate"]:
@@ -91,22 +93,25 @@ def ordinary_road_recovery(
     return acc_capacity, acc_speed
 
 
-def main(depth_thres, number_of_cpu):
+def main(
+    depth_thres,
+    number_of_cpu,
+):
     """Main function:
 
-    Parameters
-    ----------
-    Model Parameters
-    odpfc_32p.pq: base scenario output
-    road_links_x.gpq: disruption analysis output
+    Model Inputs
+    ------------
+    - Model Parameters
+    - odpfc_32p.pq: base scenario output
+    - road_links_x.gpq: disruption analysis output
         [disruption analysis] road_label, flood_depth_max, damage_level_max,
         [base scenario analysis] current_capacity, current_speed,
         [config] free_flow_speed, min_flow_speeds, max_speed, initial_flow_speeds
 
-    Returns
+    Outputs
     -------
-    Daily edge flows during the recovery period (D-0 to D-110).
-    Isolated trips after daily recovery (D-0 to D-110).
+    - Daily edge flows during the recovery period (D-0 to D-110).
+    - Isolated trips after daily recovery (D-0 to D-110).
 
     """
     # bridge recovery rates

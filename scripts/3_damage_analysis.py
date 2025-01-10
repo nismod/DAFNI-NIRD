@@ -1,27 +1,45 @@
-# %%
 import os
 import sys
-from pathlib import Path
-
-import pandas as pd
-import numpy as np
-import geopandas as gpd
-
-from snail import damages
-from nird.utils import load_config
-
-from collections import defaultdict
 import warnings
+from collections import defaultdict
+from pathlib import Path
+from typing import Dict, Tuple
+
+import geopandas as gpd
+import numpy as np
+import pandas as pd
+
+from nird.utils import load_config
+from snail import damages
 
 warnings.simplefilter("ignore")
 
 base_path = Path(load_config()["paths"]["soge_clusters"])
 
 
-# %%
-def create_damage_curves(damage_ratio_df):
+def create_damage_curves(damage_ratio_df: pd.DataFrame) -> Dict:
     """Create a dictionary of piecewise linear damage curves for various road
-    classifications and flow conditions based on damage ratio data."""
+    classifications and flow conditions based on damage ratio data.
+
+    Parameters
+    ----------
+    damage_ratio_df: pd.DataFrame
+        A sample of flood depths and their corresponding road flood damage ratios.
+
+    Returns
+    -------
+    Dict
+        A dictionary containing damage curves for different road and flow conditions.
+
+    Notes:
+    C1: motorways & trunk roads, sophisiticated accessories, low flow
+    C2: motorways & trunk roads, sophisiticated accessories, high flow
+    C3: motorways & trunk roads, non sophisticated accessories, low flow
+    C4: motorways & trunk roads, non sophisticated accessories, high flow
+    C5: other roads, low flow
+    C6: other roads, high flow
+    """
+
     list_of_damage_curves = []
     cols = damage_ratio_df.columns[1:]
     for col in cols:
@@ -31,15 +49,6 @@ def create_damage_curves(damage_ratio_df):
         list_of_damage_curves.append(damage_curve)
 
     damage_curve_dict = defaultdict()
-
-    """
-    C1: motorways & trunk roads, sophisiticated accessories, low flow
-    C2: motorways & trunk roads, sophisiticated accessories, high flow
-    C3: motorways & trunk roads, non sophisticated accessories, low flow
-    C4: motorways & trunk roads, non sophisticated accessories, high flow
-    C5: other roads, low flow
-    C6: other roads, high flow
-    """
     keys = ["C1", "C2", "C3", "C4", "C5", "C6"]
     for idx in range(len(keys)):
         key = keys[idx]
@@ -50,14 +59,37 @@ def create_damage_curves(damage_ratio_df):
 
 
 def compute_damage_fraction(
-    road_classification,
-    trunk_road,
-    road_label,  # [tunnel, bridge, road]
-    flood_depth,  # meter
-    damage_curves,
-):
+    road_classification: str,
+    trunk_road: bool,
+    road_label: str,
+    flood_depth: float,
+    damage_curves: Dict,
+) -> Tuple[str, float, str, float]:
     """Compute the damage fraction for a road asset based on its classification,
-    label, and flood depth."""
+    label, and flood depth.
+
+    Parameters
+    ----------
+    road_classification : str
+        The classification of the road, such as "Motorway", "A Road", or "B Road".
+    trunk_road : bool
+        Specifies whether the road is a trunk road (True) or not (False).
+    road_label : str
+        The type of infrastructure, such as "bridge", "tunnel", or "road".
+    flood_depth : float
+        The depth of floodwater on the road asset in meters.
+    damage_curves : Dict
+        A dictionary containing damage curves for different road and flow conditions.
+
+    Returns
+    -------
+    Tuple[str, float, str, float]
+        A tuple containing:
+        - The first damage curve label (e.g., "C1", "C3", or "C5").
+        - The computed damage fraction from the first curve.
+        - The second damage curve label (e.g., "C2", "C4", or "C6").
+        - The computed damage fraction from the second curve.
+    """
 
     if road_label == "tunnel" and (
         road_classification == "Motorway"
@@ -82,18 +114,18 @@ def compute_damage_fraction(
 
 
 def compute_damage_values(
-    length,  # in meters
-    flood_type,
-    damage_fraction,
-    road_classification,
-    form_of_way,
-    urban,
-    lanes,
-    road_label,  # ["tunnel", "bridge", "road"]
-    damage_level,
-    damage_values,  # million £/unit
+    length: float,  # in meters
+    flood_type: str,
+    damage_fraction: float,
+    road_classification: str,
+    form_of_way: str,
+    urban: int,
+    lanes: int,
+    road_label: str,
+    damage_level: str,
+    damage_values: float,  # million £/unit
     bridge_width=None,
-):
+) -> Tuple[float, float, float]:
     """
     Calculate the damage costs (minimum, maximum, and mean) for different types of road
     infrastructure (bridges, tunnels, and ordinary roads) caused by flooding.
@@ -132,12 +164,11 @@ def compute_damage_values(
 
     Returns:
     -------
-    tuple[float, float, float]
+    Tuple [float, float, float]
         A tuple containing:
         - min_cost (float): The minimum estimated damage cost.
         - max_cost (float): The maximum estimated damage cost.
         - mean_cost (float): The mean estimated damage cost.
-
     """
 
     def compute_bridge_damage(length, width, flood_type, damage_level):
@@ -190,17 +221,30 @@ def compute_damage_values(
     return min_cost, max_cost, mean_cost
 
 
-def calculate_damage(disrupted_links, damage_curves, damage_values):
+def calculate_damage(
+    disrupted_links: pd.DataFrame,
+    damage_curves: Dict,
+    damage_values: Dict,
+) -> pd.DataFrame:
     """
     Calculate damage fractions and costs for disrupted road links based on flood depth.
 
-    Parameters:
-        disrupted_links: DataFrame of disrupted road links with necessary attributes.
-        damage_curves: Dictionary containing damage curves.
-        damage_values: Dictionary containing damage cost values.
+    Parameters
+    ----------
+    disrupted_links: pd.DataFrame
+        A DataFrame containing disrupted road links and their attributes with required
+        columns such as "flood_depth_surface" and "flood_depth_river".
+    damage_curves: Dict
+        A dictionary containing damage curves.
+    damage_values: Dict
+        A dictionary containing damage cost values for different damage levels,
+        road asset types, and flood types.
 
-    Returns:
-        pd.DataFrame: Updated DataFrame with calculated damage fractions and costs.
+    Returns
+    -------
+    pd.DataFrame
+        Updated DataFrame with calculated damage fractions and costs. Includes columns
+        for damage fractions and cost stats (min, max, mean).
     """
 
     # Validate required columns
@@ -294,7 +338,26 @@ def calculate_damage(disrupted_links, damage_curves, damage_values):
     return disrupted_links
 
 
-def format_intersections(intersections, road_links):
+def format_intersections(
+    intersections: pd.DataFrame,
+    road_links: gpd.GeoDataFrame,
+) -> pd.DataFrame:
+    """Format intersection data and enrich it with road link attributes.
+
+    Parameters
+    ----------
+    intersections: pd.DataFrame
+        A DataFrame containing intersection results (module 2), such as
+        flood depth and damage level based on road intersections.
+    road_links: gpd.GeoDataFrame
+        Original road links of the network.
+
+    Returns
+    -------
+    pd.DataFrame
+        A formatted and enriched DataFrame of intersections.
+    """
+
     # Define default values for missing columns
     columns_to_add = {
         "flood_depth_surface": 0.0,
@@ -355,33 +418,26 @@ def format_intersections(intersections, road_links):
 def main(depth_thres):
     """Main function
 
-    Parameters
-    ----------
-    damage_ratio_road_flood.xlsx: damage curves
-    damage_cost_road_flood_uk.xlsx: asset damage values
-    GB_road_links_with_bridges.gpq: network links
-    intersections: module 2 output.
+    Model Inputs
+    ------------
+    - damage_ratio_road_flood.xlsx: damage curves
+    - damage_cost_road_flood_uk.xlsx: asset damage values
+    - GB_road_links_with_bridges.gpq: network links
+    - intersections: module 2 output.
 
-    Returns
+    Outputs
     -------
-    intersections_with_damages (min, max, mean)
+    - pd.DataFrame:
+        intersections_with_damages (min, max, mean)
+    """
 
-    """
     # damage curves
-    """
-    4 damage curvse for M and A roads
-    2 damage curvse for B roads
-    """
     damages_ratio_df = pd.read_excel(
         base_path / "damage_curves" / "damage_ratio_road_flood.xlsx"
     )
     damage_curves = create_damage_curves(damages_ratio_df)
 
     # damage values (updated with UK values)
-    """
-    asset types, number of lanes, flood types
-    min, max, mean damage values
-    """
     road_links = gpd.read_parquet(
         base_path / "networks" / "GB_road_links_with_bridges.gpq"
     )
