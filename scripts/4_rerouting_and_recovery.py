@@ -26,6 +26,7 @@ def bridge_recovery(
     day: int,
     damage_level: str,
     designed_capacity: float,
+    current_capacity: float,
     current_speed: float,
     initial_speed: float,
     max_speed: float,
@@ -35,23 +36,21 @@ def bridge_recovery(
 ) -> Tuple[float, float]:
     """Compute the daily recovery of brideg capacity and speed based on
     damage level and recovery rates."""
+
     if day == 0:  # occurrence of damage
         acc_speed = min(current_speed, max_speed)
         if damage_level == ["no", "minor", "moderate"]:
-            acc_capacity = designed_capacity
+            acc_capacity = current_capacity
         else:  # extensive/severe
             acc_capacity = 0.0
-    elif day == 1:  # the first day of recovery
-        acc_speed = initial_speed
-        if damage_level != "no":
-            recover_rate = bridge_recovery_dict[damage_level][day]
-            if recover_rate > 0:
-                acc_capacity = max(designed_capacity * recover_rate, acc_capacity)
     else:
-        if damage_level != "no":
+        acc_speed = initial_speed  # free-flow speed
+        if damage_level == "no":
+            acc_capacity = current_capacity
+        else:
             recover_rate = bridge_recovery_dict[damage_level][day]
             if recover_rate > 0:
-                acc_capacity = max(designed_capacity * recover_rate, acc_capacity)
+                acc_capacity = max(designed_capacity * recover_rate, current_capacity)
 
     return acc_capacity, acc_speed
 
@@ -60,6 +59,7 @@ def ordinary_road_recovery(
     day: int,
     damage_level: str,
     designed_capacity: float,
+    current_capacity: float,
     current_speed: float,
     initial_speed: float,
     max_speed: float,
@@ -73,22 +73,23 @@ def ordinary_road_recovery(
     if day == 0:
         acc_speed = min(current_speed, max_speed)
         if damage_level in ["no", "minor", "moderate"]:
-            acc_capacity = designed_capacity
-        else:  # extensive/severe
+            acc_capacity = current_capacity
+        else:
             acc_capacity = 0.0
-    elif day == 1:
+    elif 0 < day <= 2:
         acc_speed = initial_speed
-        if damage_level != "no":
+        if damage_level == "no":
+            acc_capacity = current_capacity
+        else:
             recovery_rate = road_recovery_dict[damage_level][day]
             if recovery_rate > 0:
-                acc_capacity = max(designed_capacity * recovery_rate, acc_capacity)
-    elif day == 2:
-        if damage_level != "no":
-            recovery_rate = road_recovery_dict[damage_level][day]
-            if recovery_rate > 0:
-                acc_capacity = max(designed_capacity * recovery_rate, acc_capacity)
-    else:
-        pass
+                acc_capacity = max(designed_capacity * recovery_rate, current_capacity)
+    else:  # day > 2
+        acc_speed = initial_speed
+        if damage_level == "no":
+            acc_capacity = current_capacity
+        else:
+            acc_capacity = max(designed_capacity, current_capacity)
 
     return acc_capacity, acc_speed
 
@@ -227,6 +228,7 @@ def main(
                         day,
                         row["damage_level_max"],
                         row["designed_capacity"],
+                        row["current_capacity"],
                         row["current_speed"],
                         row["initial_flow_speeds"],
                         row["max_speed"],
@@ -240,6 +242,7 @@ def main(
                             day,
                             row["damage_level_max"],
                             row["designed_capacity"],
+                            row["current_capacity"],
                             row["current_speed"],
                             row["initial_flow_speeds"],
                             row["max_speed"],
@@ -283,16 +286,15 @@ def main(
 
         # isolation_total.extend(isolation)
         isolation_df = pd.DataFrame(
-            # isolation_total,
             isolation,
             columns=[
                 "origin_node",
                 "destination_node",
-                "flow",
+                "Car21",
             ],
         )
 
-        # export results
+        # export outputs
         if isolation_df.empty:
             road_links.to_parquet(
                 base_path.parent
@@ -300,6 +302,7 @@ def main(
                 / "rerouting_analysis"
                 / str(depth_thres)
                 / "17"
+                / "fixed"
                 / f"edge_flows_{day}.gpq"
             )
             isolation_df.to_csv(
@@ -308,12 +311,23 @@ def main(
                 / "rerouting_analysis"
                 / str(depth_thres)
                 / "17"
+                / "fixed"
                 / f"trip_isolations_{day}.csv",
                 index=False,
             )
             print("There is no disrupted flows!")
             break
         else:
+            isolation_df.to_csv(
+                base_path.parent
+                / "results"
+                / "rerouting_analysis"
+                / str(depth_thres)
+                / "17"
+                / "fixed"
+                / f"trip_isolations_{day}.csv",
+                index=False,
+            )
             if day in [0, 1, 2, 3, 4, 5, 15, 30, 60, 90, 110]:
                 road_links.to_parquet(
                     base_path.parent
@@ -321,16 +335,8 @@ def main(
                     / "rerouting_analysis"
                     / str(depth_thres)
                     / "17"
+                    / "fixed"
                     / f"edge_flows_{day}.gpq"
-                )
-                isolation_df.to_csv(
-                    base_path.parent
-                    / "results"
-                    / "rerouting_analysis"
-                    / str(depth_thres)
-                    / "17"
-                    / f"trip_isolations_{day}.csv",
-                    index=False,
                 )
 
 
