@@ -448,6 +448,7 @@ def main(depth_thres):
         columns={
             "acc_capacity": "current_capacity",
             "acc_speed": "current_speed",
+            "acc_flow": "current_flow",
         },
         inplace=True,
     )
@@ -579,11 +580,13 @@ def main(depth_thres):
             base_scenario_links[
                 [
                     "e_id",
-                    "current_capacity",
-                    "current_speed",
+                    "combined_label",
                     "free_flow_speeds",
                     "initial_flow_speeds",
                     "min_flow_speeds",
+                    "current_capacity",
+                    "current_speed",
+                    "current_flow",
                 ]
             ],
             how="left",

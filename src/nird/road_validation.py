@@ -445,7 +445,7 @@ def update_network_structure(
     temp_edge_flow: pd.DataFrame,
     road_links: gpd.GeoDataFrame,
 ) -> igraph.Graph:
-    """Drop fully utilised edges and Update edge weights.
+    """Drop fully utilised edges and update edge weights.
 
     Parameters
     ----------
@@ -483,7 +483,9 @@ def update_network_structure(
         edge_attrs=list(graph_df.columns)[2:],
         directed=False,
     )
-    return network
+    edge_index_to_name = {idx: name for idx, name in enumerate(network.es["e_id"])}
+
+    return network, edge_index_to_name
 
 
 def extract_od_pairs(
@@ -594,62 +596,8 @@ def find_least_cost_path(
         mode="out",
         output="epath",
     )  # paths: o - d(s)
-    edge_paths = []
-    # operating_costs = []
-    # time_costs = []
-    # toll_costs = []
-    for path in paths:  # path: o - d
-        edge_path = []
-        # operating_cost = []
-        # time_cost = []
-        # toll_cost = []
-        for p in path:  # p: each line segment
-            edge_path.append(shared_network.es[p]["e_id"])
-            # operating_cost.append(shared_network.es[p]["operating_cost"])
-            # time_cost.append(shared_network.es[p]["time_cost"])
-            # toll_cost.append(shared_network.es[p]["average_toll_cost"])
-        edge_paths.append(edge_path)  # a list of lists
-        # operating_costs.append(sum(operating_cost))  # a list of values
-        # time_costs.append(sum(time_cost))  # a list of values
-        # toll_costs.append(sum(toll_cost))  # a list of values
 
-    return (
-        origin_node,
-        destination_nodes,
-        edge_paths,
-        flows,
-        # operating_costs,
-        # time_costs,
-        # toll_costs,
-    )
-
-
-def compute_edge_costs(
-    # edge_weight_df,
-    path: List[int],
-) -> Tuple[float, float, float]:
-    """Calculate the total travel cost for the path
-
-    Parameters
-    ----------
-    path: List
-        A list of edge indexes that define the path.
-
-    Returns
-    -------
-    od_voc: float
-        Vehicle operating costs of each trip.
-    od_vot: float
-        Value of time of each trip.
-    od_toll: float
-        Toll costs of each trip.
-    """
-    od_voc = edge_weight_df.loc[edge_weight_df["e_id"].isin(path), "voc"].sum()
-    od_vot = edge_weight_df.loc[edge_weight_df["e_id"].isin(path), "time_cost"].sum()
-    od_toll = edge_weight_df.loc[
-        edge_weight_df["e_id"].isin(path), "average_toll_cost"
-    ].sum()
-    return (od_voc, od_vot, od_toll)
+    return origin_node, destination_nodes, paths, flows
 
 
 def worker_init_path(
@@ -669,32 +617,6 @@ def worker_init_path(
     """
     global shared_network
     shared_network = pickle.loads(shared_network_pkl)
-    return None
-
-
-def worker_init_edge(
-    shared_network_pkl: bytes,
-    shared_weight_pkl: bytes,
-) -> None:
-    """Worker initialisation in multiprocesses to create a shared network
-    that could be used across different workers.
-
-    Parameters
-    ----------
-    shared_network_pkl: bytes
-        The pickled file of the igraph network.
-    shared_weight_pkl: bytes
-        The pickled flle of a dictionary of network edge weights.
-
-    Returns
-    -------
-    None.
-    """
-    # print(os.getpid())
-    global shared_network
-    shared_network = pickle.loads(shared_network_pkl)
-    global edge_weight_df
-    edge_weight_df = pickle.loads(shared_weight_pkl)
     return None
 
 
@@ -720,7 +642,8 @@ def network_flow_model(
     isolation: non-allocated od matrix
     odpfc: allocated od matrix
     """
-
+    # create edge_index_to_name dict
+    edge_index_to_name = {idx: name for idx, name in enumerate(network.es["e_id"])}
     partial_speed_flow_func = partial(
         speed_flow_func,
         flow_breakpoint_dict=flow_breakpoint_dict,
@@ -739,7 +662,7 @@ def network_flow_model(
     time_equiv_cost = 0
     operating_cost = 0
     toll_cost = 0
-    # odpfc = []
+    odpfc = []
     isolation = []
 
     iter_flag = 1
@@ -781,7 +704,6 @@ def network_flow_model(
             list_of_spath = pool.map(find_least_cost_path, args)
             # [origin(name), destinations(name), path(idx), flow(int)]
         print(f"The least-cost path flow allocation time: {time.time() - st}.")
-
         temp_flow_matrix = pd.DataFrame(
             list_of_spath,
             columns=[
@@ -789,18 +711,12 @@ def network_flow_model(
                 "destination",
                 "path",
                 "flow",
-                # "operating_cost_per_flow",
-                # "time_cost_per_flow",
-                # "toll_cost_per_flow",
             ],
         ).explode(
             [
                 "destination",
                 "path",
                 "flow",
-                # "operating_cost_per_flow",
-                # "time_cost_per_flow",
-                # "toll_cost_per_flow",
             ]
         )
 
@@ -832,6 +748,7 @@ def network_flow_model(
             "path",
             "flow",
         )
+        temp_edge_flow["e_id"] = temp_edge_flow.e_id.map(edge_index_to_name)
 
         # add/update edge attributes
         temp_edge_flow = temp_edge_flow.merge(
@@ -857,9 +774,6 @@ def network_flow_model(
         print(f"The maximum amount of edge overflow: {max_overflow}")
 
         if max_overflow <= 0:
-            # update the origin-destination-path-cost matrix
-            # odpfc.extend(temp_flow_matrix.to_numpy().tolist())
-
             # add/update edge key variables: flow/speed/capacity
             temp_edge_flow["acc_flow"] = (
                 temp_edge_flow["flow"] + temp_edge_flow["acc_flow"]
@@ -882,26 +796,6 @@ def network_flow_model(
                 ]
             )
             road_links = road_links.reset_index()
-
-            # update travel costs: based on temp_flow_matrix
-            # operating costs
-            # temp_cost = (
-            #     temp_flow_matrix.operating_cost_per_flow * temp_flow_matrix.flow
-            # ).sum()
-            # operating_cost += temp_cost
-            # # time costs
-            # temp_cost = (
-            #     temp_flow_matrix.time_cost_per_flow * temp_flow_matrix.flow
-            # ).sum()
-            # time_equiv_cost += temp_cost
-            # # toll costs
-            # temp_cost = (
-            #     temp_flow_matrix.toll_cost_per_flow * temp_flow_matrix.flow
-            # ).sum()
-            # toll_cost += temp_cost
-            # # total cost
-            # total_cost += time_equiv_cost + operating_cost + toll_cost
-
             print("Iteration stops: there is no edge overflow!")
             break
 
@@ -922,13 +816,6 @@ def network_flow_model(
             print("Error: r >= 1")
             break
         print(f"r = {r}")
-
-        # update the origin-destination-path-cost matrix
-        # odpfc.extend(
-        #     (temp_flow_matrix.assign(flow=temp_flow_matrix["flow"] * r))
-        #     .to_numpy()
-        #     .tolist()
-        # )
 
         # add/update edge key variables: flows/speeds/capacities
         temp_edge_flow["adjusted_flow"] = temp_edge_flow["flow"] * r
@@ -953,25 +840,6 @@ def network_flow_model(
         )
         road_links = road_links.reset_index()
 
-        # update travel costs based on temp_flow_matrix
-        # operating costs
-        # temp_cost = (
-        #     temp_flow_matrix.operating_cost_per_flow * temp_flow_matrix.flow * r
-        # ).sum()
-        # operating_cost += temp_cost
-        # # time costs
-        # temp_cost = (
-        #     temp_flow_matrix.time_cost_per_flow * temp_flow_matrix.flow * r
-        # ).sum()
-        # time_equiv_cost += temp_cost
-        # # toll costs
-        # temp_cost = (
-        #     temp_flow_matrix.toll_cost_per_flow * temp_flow_matrix.flow * r
-        # ).sum()
-        # toll_cost += temp_cost
-        # # total cost
-        # total_cost += time_equiv_cost + operating_cost + toll_cost
-
         # update remaining od flows
         remain_od["Car21"] = remain_od["Car21"] * (1 - r)
         remain_od.loc[remain_od.Car21 < 0.5, "Car21"] = 0
@@ -979,7 +847,9 @@ def network_flow_model(
         print(f"The total remaining supply (after flow adjustment) is: {total_remain}")
 
         # update network structure (nodes and edges)
-        network = update_network_structure(network, temp_edge_flow, road_links)
+        network, edge_index_to_name = update_network_structure(
+            network, temp_edge_flow, road_links
+        )
 
         iter_flag += 1
 
@@ -994,4 +864,4 @@ def network_flow_model(
     print(f"total operating cost is (£): {operating_cost}")
     print(f"total toll cost is (£): {toll_cost}")
 
-    return road_links, isolation  # , odpfc
+    return road_links, isolation, odpfc
