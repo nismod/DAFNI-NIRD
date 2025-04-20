@@ -1,31 +1,32 @@
 name: skmob
 channels:
   - conda-forge
-  - bioconda
+  - nodefaults
 dependencies:
-  - python=3.10
+  - python=3.12
   - black
-  - make
+  - geopandas>=1
+  - ipykernel
+  - jupyter
   - m2r2
+  - make
   - mypy
+  - pandas
   - pre-commit
+  - pyarrow
   - pytest
   - pytest-cov
-  - ruff
-  - sphinx
-  - pip
-  - pandas
-  - python-igraph=0.9.*
-  - powerlaw
-  - tqdm
+  - python-igraph=0.11.*
+  - rasterio
   - requests
+  - ruff
   - scikit-learn
-  - folium
-  - geojson
-  - h3
-  - pooch
-  - statsmodels
-  - geopandas
-  - jupyter
-  - ipykernel
   - snkit
+  - sphinx
+  - tqdm
+  - xarray
+  - gdal
+  - pip
+  - pip:
+    - nismod-snail
+    - -e . # editable install of nird package
