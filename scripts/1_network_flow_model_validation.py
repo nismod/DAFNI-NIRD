@@ -1,3 +1,4 @@
+# %%
 from pathlib import Path
 import sys
 import time
@@ -12,11 +13,35 @@ import json
 import warnings
 
 warnings.simplefilter("ignore")
-# base_path = Path(load_config()["paths"]["soge_clusters"])
 base_path = Path(load_config()["paths"]["base_path"])
 
 
 def main(num_of_cpu):
+    """
+    Main function to validate the network flow model.
+
+    Model Inputs:
+        - Model parameters:
+            - Flow breakpoints, capacity, free-flow speeds, minimum speeds,
+            and urban speed limits.
+        - GB_road_links_with_bridges.gpq:
+            GeoDataFrame containing road network data with attributes.
+        - od_gb_oa_2021_node_with_bridges.csv:
+            Origin-destination matrix containing traffic flow data.
+
+    Model Outputs:
+        - edge_flows_validation.gpq:
+            GeoDataFrame of road network data enriched with validation results.
+        - trip_isolation_validation.csv:
+            CSV file containing data on isolated trips resulting from network
+            disruptions.
+
+    Parameters:
+        num_of_cpu (int): Number of CPUs to use for parallel processing.
+
+    Returns:
+        None: Outputs are saved to files.
+    """
     start_time = time.time()
     # model parameters
     with open(base_path / "parameters" / "flow_breakpoint_dict.json", "r") as f:
@@ -31,25 +56,18 @@ def main(num_of_cpu):
         urban_speed_dict = json.load(f)
 
     # network links -> network links with bridges
-    # road_link_file = gpd.read_parquet(
-    #     base_path / "networks" / "GB_road_links_with_bridges.gpq"
-    # )
     road_link_file = gpd.read_parquet(
         base_path / "networks" / "road" / "GB_road_links_with_bridges.gpq"
     )
     # od matrix (2021) -> updated to od with bridges
-    # od_node_2021 = pd.read_csv(
-    #     base_path / "census_datasets" / "od_gb_oa_2021_node_with_bridges.csv"
-    # )
     od_node_2021 = pd.read_csv(
         base_path
         / "census_datasets"
         / "od_matrix"
         / "od_gb_oa_2021_node_with_bridges.csv"
     )
-
     od_node_2021["Car21"] = od_node_2021["Car21"] * 2
-    od_node_2021 = od_node_2021.head(100)
+    # od_node_2021 = od_node_2021.head(100)  # debug
     print(f"total flows: {od_node_2021.Car21.sum()}")
 
     # initialise road links
@@ -84,17 +102,27 @@ def main(num_of_cpu):
         ],
     )
     print(f"The total simulation time: {time.time() - start_time}")
-    breakpoint()
+
     # export files
     road_links.to_parquet(
-        base_path.parent / "results" / "base_scenario" / "edge_flows_validation.gpq"
+        base_path.parent / "outputs" / "base_scenario" / "edge_flows_validation.gpq"
     )
     isolation.to_csv(
-        base_path.parent / "results" / "base_scenario" / "trip_isolation_validation.csv"
+        base_path.parent / "outputs" / "base_scenario" / "trip_isolation_validation.csv"
     )
 
 
 if __name__ == "__main__":
+    """
+    Entry point of the script. Reads the number of CPUs from command-line arguments
+    and calls the main function.
+
+    Command-line Arguments:
+        num_of_cpu (int): Number of CPUs to use for parallel processing.
+
+    Returns:
+        None: Prints a message if the required argument is missing.
+    """
     try:
         num_of_cpu = int(sys.argv[1])
         main(num_of_cpu)

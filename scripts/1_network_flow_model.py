@@ -16,27 +16,42 @@ base_path = Path(load_config()["paths"]["soge_clusters"])
 
 def main(num_of_cpu):
     """
+    Main function to simulate traffic flow on a road network.
+
     Model Inputs:
-    - Model parameters.
-    - GB_road_links_with_bridges.gpq:
-        A file containing road network data with additional edge attributes:
-        - Free-flow speeds: Baseline speeds under normal conditions.
-        - Minimum speeds: Defined separately for urban and rural areas.
-        - Maximum speeds: Speeds on flooded roads (used for disruption analysis only).
-        - Initial speeds: Starting speeds for the simulation.
-    - od_gb_oa_2021_node_with_bridges.csv (for validation)
-        or od_gb_oa_2021_node_with_bridges_32p.csv
+        - Model parameters:
+            - Flow breakpoints, capacity, free-flow speeds, minimum speeds, and urban
+                speed limits.
+        - GB_road_links_with_bridges.gpq:
+            GeoDataFrame containing road network data with attributes:
+            - Free-flow speeds: Baseline speeds under normal conditions.
+            - Minimum speeds: Defined separately for urban and rural areas.
+            - Maximum speeds: Speeds on flooded roads (used for disruption analysis
+                only).
+            - Initial speeds: Starting speeds for the simulation.
+        - od_gb_oa_2021_node_with_bridges.csv or
+            od_gb_oa_2021_node_with_bridges_32p.csv:
+            Origin-destination matrix containing traffic flow data.
 
     Model Outputs:
-    - road_links.gpq:
-        Road network data enriched with simulation results:
-        - acc_flow: Accumulated traffic flow on road links.
-        - acc_capacity: remaining capacity of road links.
-        - acc_speed: current speeds on road links.
-    - isolation.pq:
-        Data on isolated trips resulting from network disruptions.
-    - odpfc.pq:
-        Origin-destination-path-flow-cost matrix for evaluating network performance.
+        - edge_flows_32p.gpq:
+            GeoDataFrame of road network data enriched with simulation results:
+            - acc_flow: Accumulated traffic flow on road links.
+            - acc_capacity: Remaining capacity of road links.
+            - acc_speed: Current speeds on road links.
+        - trip_isolation_32p.pq:
+            DataFrame of isolated trips resulting from network disruptions.
+        - odpfc_32p.pq:
+            Origin-destination-path-flow-cost matrix for evaluating network performance:
+            - Path: Sequence of road links for each trip.
+            - Flow: Traffic flow along the path.
+            - Operating, time, and toll costs per flow.
+
+    Parameters:
+        num_of_cpu (int): Number of CPUs to use for parallel processing.
+
+    Returns:
+        None: Outputs are saved to files.
     """
 
     start_time = time.time()
