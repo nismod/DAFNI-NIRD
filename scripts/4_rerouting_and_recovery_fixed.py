@@ -30,8 +30,28 @@ def bridge_recovery(
     current_capacity: float,
     bridge_recovery_dict: Dict,
 ) -> Tuple[float, float]:
-    """Compute the daily recovery of bridge capacity and speed based on
-    damage level and recovery rate."""
+    """Calculate the daily recovery of bridge capacity based on the damage level and
+        recovery rate.
+
+    Parameters:
+    -----------
+    day : int
+        The current day in the recovery period.
+    damage_level : str
+        The damage level of the bridge (e.g., "minor", "moderate", "extensive",
+            or "severe").
+    designed_capacity : float
+        The original designed capacity of the bridge.
+    current_capacity : float
+        The current capacity of the bridge.
+    bridge_recovery_dict : Dict
+        A dictionary containing recovery rates for different damage levels.
+
+    Returns:
+    --------
+    Tuple[float, float]
+        Updated current capacity of the bridge.
+    """
 
     if day == 0:
         if damage_level in ["extensive", "severe"]:
@@ -50,8 +70,27 @@ def ordinary_road_recovery(
     current_capacity: float,
     road_recovery_dict: Dict,
 ) -> Tuple[float, float]:
-    """Compute the daily recovery of ordinary road capacity and speed based on
-    damage level and recovery rates."""
+    """Calculate the daily recovery of ordinary road capacity based on the damage level
+        and recovery rates.
+
+    Parameters:
+    -----------
+    day : int
+        The current day in the recovery period.
+    damage_level : str
+        The damage level of the road (e.g., "minor", "moderate", "extensive", "severe").
+    designed_capacity : float
+        The original designed capacity of the road.
+    current_capacity : float
+        The current capacity of the road.
+    road_recovery_dict : Dict
+        A dictionary containing recovery rates for different damage levels.
+
+    Returns:
+    --------
+    Tuple[float, float]
+        Updated current capacity of the road.
+    """
 
     if day == 0:  # the occurance of damage
         if damage_level in ["extensive", "severe"]:
@@ -86,23 +125,24 @@ def load_recovery_dicts(base_path: Path) -> Tuple[Dict, Dict]:
 def main(
     depth_thres,
     number_of_cpu,
+    flood_key,
 ):
-    """Main function:
+    """Perform rerouting and recovery analysis for a road network affected by flooding.
 
-    Model Inputs
-    ------------
-    - Model Parameters
-    - odpfc_32p.pq: base scenario output
-    - road_links_x.gpq: disruption analysis output
-        [disruption analysis] road_label, flood_depth_max, damage_level_max,
-        [base scenario analysis] current_capacity, current_speed,
-        [config] free_flow_speed, min_flow_speeds, max_speed, initial_flow_speeds
+    Parameters:
+    -----------
+    depth_thres : int
+        The flood depth threshold for road closure (e.g., 15, 30, or 60 cm).
+    number_of_cpu : int
+        The number of CPUs to use for parallel processing.
+    flood_key : int
+        A unique identifier for the flood scenario.
 
-    Outputs
-    -------
+    Outputs:
+    --------
     - Daily edge flows during the recovery period (D-0 to D-110).
     - Isolated trips after daily recovery (D-0 to D-110).
-
+    - Cost matrix summarizing time, fuel, toll, and total costs for each day.
     """
     # Load recovery dicts
     bridge_recovery_dict, road_recovery_dict = load_recovery_dicts(base_path)
@@ -117,21 +157,23 @@ def main(
     )
 
     # Load road links
+    # change to batch process
     road_links = gpd.read_parquet(
         base_path.parent
         / "results"
         / "disruption_analysis"
         / str(depth_thres)
         / "links"
-        / "road_links_17.gpq"  # Thames Lloyd's RDS
+        / f"road_links_{flood_key}.gpq"  # Thames Lloyd's RDS
     )
+
     road_links["designed_capacity"] = (
         road_links.combined_label.map(flow_capacity_dict) * road_links.lanes * 24
     )
 
     # Load OD path file
     od_path_file = pd.read_parquet(
-        base_path.parent / "results" / "base_scenario" / "odpfc_32p.pq",
+        base_path.parent / "results" / "base_scenario" / "odpfc_validation_0221.pq",
         engine="fastparquet",
     )  # input2
 
@@ -149,7 +191,10 @@ def main(
     partial_have_common_items = partial(have_common_items, list2=disrupted_links)
 
     # Recovery analysis loop
+    cDict = {}
     for day in range(111):
+        if day not in [0, 1, 36]:
+            continue
         print(f"Rerouting Analysis on D-{day}...")
         # update edge capacities
         road_links["current_capacity"] = road_links.progress_apply(
@@ -186,6 +231,7 @@ def main(
         od_path_file["capacities_of_disrupted_links"] = od_path_file[
             "disrupted_links"
         ].apply(lambda x: [current_capacity_dict.get(xi, 0) for xi in x])
+
         od_path_file["min_capacities_of_disrupted_links"] = od_path_file[
             "capacities_of_disrupted_links"
         ].apply(lambda x: min(x) if len(x) > 0 else np.nan)
@@ -194,7 +240,8 @@ def main(
             od_path_file["min_capacities_of_disrupted_links"].notnull()
         ]
         disrupted_od["flow"] = np.maximum(
-            0, disrupted_od["flow"] - disrupted_od["min_capacities_of_disrupted_links"]
+            0,
+            disrupted_od["flow"] - disrupted_od["min_capacities_of_disrupted_links"],
         )
 
         # Adjust road flows
@@ -235,14 +282,14 @@ def main(
         network = func.create_igraph_network(valid_road_links)
 
         # run flow rerouting analysis
-        valid_road_links, isolation, _ = func.network_flow_model(
+        _, isolation, _, cList = func.network_flow_model(
             valid_road_links,
             network,
             disrupted_od,
             flow_breakpoint_dict,
             num_of_cpu=number_of_cpu,
         )
-
+        cDict[day] = cList
         road_links = road_links.set_index("e_id")
         road_links.update(valid_road_links.set_index("e_id")["acc_flow"])
         road_links = road_links.reset_index()
@@ -257,26 +304,29 @@ def main(
         )
 
         # export results
-        isolation_df.to_csv(
+        out_path = (
             base_path.parent
             / "results"
             / "rerouting_analysis"
-            / str(depth_thres)
-            / "17"
-            / "dynamic"
-            / f"trip_isolations_{day}.csv",
+            / "complete_od2"
+            / str(depth_thres)  # e.g.,30
+            / str(flood_key)  # e.g.,17
+        )
+        out_path.mkdir(parents=True, exist_ok=True)
+        isolation_df.to_csv(
+            out_path / f"trip_isolations_{day}.csv",
             index=False,
         )
-        if day in [0, 1, 2, 3, 4, 5, 15, 30, 60, 90, 110]:
-            road_links.to_parquet(
-                base_path.parent
-                / "results"
-                / "rerouting_analysis"
-                / str(depth_thres)
-                / "17"
-                / "dynamic"
-                / f"edge_flows_{day}.gpq"
-            )
+        # if day in [0, 1, 2, 3, 4, 5, 15, 30, 60, 90, 110]:
+        #     road_links.to_parquet(out_path / f"edge_flows_{day}.gpq")
+        del isolation
+        del valid_road_links
+
+    cost_df = pd.DataFrame.from_dict(
+        cDict, orient="index", columns=["time", "fuel", "toll", "total"]
+    ).reset_index()
+    cost_df.rename(columns={"index": "day"}, inplace=True)
+    cost_df.to_csv(out_path / f"cost_matrix_{day}.csv", index=False)
 
 
 if __name__ == "__main__":
@@ -284,8 +334,8 @@ if __name__ == "__main__":
         depth_thres = int(sys.argv[1])
     except (IndexError, ValueError):
         print(
-            "Error: Please provide the flood depth for road closure (e.g., 30 or "
-            "60 cm) as the first argument!"
+            "Error: Please provide the flood depth for road closure "
+            "(e.g., 15, 30 or 60 cm) as the first argument!"
         )
         sys.exit(1)
 
@@ -295,4 +345,10 @@ if __name__ == "__main__":
         print("Error: Please provide the number of CPUs as the second argument!")
         sys.exit(1)
 
-    main(depth_thres, number_of_cpu)
+    try:
+        flood_key = int(sys.argv[3])
+    except (IndexError, ValueError):
+        print("Error: Please provide the flood key!")
+        sys.exit(1)
+
+    main(depth_thres, number_of_cpu, flood_key)
