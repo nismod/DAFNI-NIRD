@@ -1,4 +1,17 @@
-"""Road Network Flow Model - Functions"""
+"""Road Network Flow Model - Functions
+
+This module provides a set of functions to model and analyze road network flows.
+It includes utilities for road network initialization, traffic flow simulation,
+cost calculations, and network updates. The functions are designed to handle
+geospatial data and integrate with igraph for network analysis.
+
+Key Features:
+- Road network extraction and classification.
+- Traffic speed and flow modeling.
+- Cost estimation for vehicle operations and travel time.
+- Network flow simulation with iterative updates.
+- Integration with multiprocessing for performance optimization.
+"""
 
 from typing import Tuple, List, Dict
 from collections import defaultdict
@@ -26,25 +39,25 @@ def select_partial_roads(
     col_name: str,
     list_of_values: List[str],
 ) -> Tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
-    """Extract partial road network based on road types.
+    """Extract a subset of the road network based on specified road types.
 
     Parameters
     ----------
     road_links: gpd.GeoDataFrame
-        Links of the road network.
+        Geospatial data representing the links (edges) of the road network.
     road_nodes: gpd.GeoDataFrame
-        Nodes of the road network.
+        Geospatial data representing the nodes (vertices) of the road network.
     col_name: str
-        The road type column.
-    list_of_values:
-        The road types to be extracted from the network.
+        Column name in `road_links` that specifies the road type.
+    list_of_values: List[str]
+        List of road types to filter and extract from the network.
 
     Returns
     -------
     selected_links: gpd.GeoDataFrame
-        Partial road links.
+        Filtered road links corresponding to the specified road types.
     selected_nodes: gpd.GeoDataFrame
-        Partial road nodes.
+        Filtered road nodes connected to the selected links.
     """
     # road links selection
     selected_links = road_links[road_links[col_name].isin(list_of_values)].reset_index(
@@ -70,18 +83,17 @@ def select_partial_roads(
 def create_urban_mask(
     etisplus_urban_roads: gpd.GeoDataFrame,
 ) -> gpd.GeoDataFrame:
-    """To extract urban areas across Great Britain (GB) based on ETISPLUS datasets.
+    """Generate a spatial mask for urban areas in Great Britain.
 
     Parameters
     ----------
     etisplus_urban_roads: gpd.GeoDataFrame
-        D6 ETISplus Roads (2010)
+        Geospatial data of ETISPLUS urban roads (2010 dataset).
 
     Returns
     -------
     urban_mask: gpd.GeoDataFrame
-        A binary file that spatially identify the urban areas across GB
-        with values == 1.
+        A geospatial mask identifying urban areas with a binary value (1 for urban).
     """
     etisplus_urban_roads = etisplus_urban_roads[
         etisplus_urban_roads["Urban"] == 1
@@ -107,19 +119,19 @@ def create_urban_mask(
 def label_urban_roads(
     road_links: gpd.GeoDataFrame, urban_mask: gpd.GeoDataFrame
 ) -> gpd.GeoDataFrame:
-    """Classify road links into urban/suburban roads.
+    """Label road links as urban or suburban based on spatial intersection.
 
     Parameters
     ----------
     road_links: gpd.GeoDataFrame
-        Links of the road network.
+        Geospatial data representing the links of the road network.
     urban_mask: gpd.GeoDataFrame
-        A binary file that spatially identify the urban areas across GB.
+        Geospatial mask identifying urban areas.
 
     Returns
     -------
     road_links: gpd.GeoDataFrame
-        Create a column "urban" to classify road links into urban/suburban links.
+        Updated road links with a new column "urban" (1 for urban, 0 for suburban).
     """
     temp_file = road_links.sjoin(urban_mask, how="left")
     temp_file["urban"] = temp_file["index_right"].apply(
@@ -207,7 +219,7 @@ def cost_func(
     c_operate: float
         The vehicle operating costs/fuel costs: £
     """
-    ave_occ = 1.06  # average car occupancy = 1.6
+    ave_occ = 1.06  # average car occupancy = 1.06
     vot = 17.69  # value of time (VOT): 17.69 £/hour
     d = distance * cons.CONV_MILE_TO_KM
     c_time = time * ave_occ * vot
@@ -548,7 +560,7 @@ def update_od_matrix(
     isolated_flow_matrix = temp_flow_matrix.loc[
         mask, ["origin", "destination", "flow"]
     ]  # drop the cost columns
-    print(f"Non_allocated_flow: {isolated_flow_matrix.flow.sum()}")
+    # print(f"Non_allocated_flow: {isolated_flow_matrix.flow.sum()}")
     temp_flow_matrix = temp_flow_matrix[~mask]
     remain_origins = temp_flow_matrix.origin.unique().tolist()
     remain_destinations = temp_flow_matrix.destination.unique().tolist()
@@ -567,14 +579,14 @@ def find_least_cost_path(
 ) -> Tuple[int, List[str], List[int], List[float]]:
     """Find the least-cost path for each OD trip.
 
-    Parameters:
+    Parameters
     -----------
     params: Tuple
         The first element: the origin node (index).
         The second element: a list of destination nodes (indexes).
         The third element: a list of outbound trips from origin to its connected destinations.
 
-    Returns:
+    Returns
     --------
         idx_of_origin_node: int
             Same as input.
@@ -990,6 +1002,7 @@ def network_flow_model(
 
         iter_flag += 1
 
+    cList = [time_equiv_cost, operating_cost, toll_cost, total_cost]
     # update the road links attributes
     road_links.acc_flow = road_links.acc_flow.astype(int)
     road_links.acc_capacity = road_links.acc_capacity.astype(int)
@@ -1001,4 +1014,4 @@ def network_flow_model(
     print(f"total operating cost is (£): {operating_cost}")
     print(f"total toll cost is (£): {toll_cost}")
 
-    return road_links, isolation, odpfc
+    return road_links, isolation, odpfc, cList

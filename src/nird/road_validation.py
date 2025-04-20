@@ -625,7 +625,7 @@ def network_flow_model(
     network: igraph.Graph,
     remain_od: pd.DataFrame,
     flow_breakpoint_dict: Dict[str, float],
-    num_of_cpu,
+    num_of_cpu: int,
 ) -> Tuple[gpd.GeoDataFrame, List, List]:
     """Process-based Network Flow Simulation.
 
@@ -650,21 +650,15 @@ def network_flow_model(
     )
     total_remain = remain_od.Car21.sum()
     print(f"The initial supply is {total_remain}")
-    number_of_edges = len(list(network.es))
-    print(f"The initial number of edges in the network: {number_of_edges}")
-    number_of_origins = remain_od.origin_node.unique().shape[0]
-    print(f"The initial number of origins: {number_of_origins}")
-    number_of_destinations = remain_od.destination_node.unique().shape[0]
-    print(f"The initial number of destinations: {number_of_destinations}")
+    print(f"The initial number of edges in the network: {len(list(network.es))}")
+    print(f"The initial number of origins: {remain_od.origin_node.nunique()}")
+    print(f"The initial number of destinations: {remain_od.destination_node.nunique()}")
 
     # starts
-    total_cost = 0
-    time_equiv_cost = 0
-    operating_cost = 0
-    toll_cost = 0
-    odpfc = []
-    isolation = []
-
+    total_cost = time_equiv_cost = operating_cost = toll_cost = 0
+    odpfc, isolation = [], []
+    initial_sumod = remain_od.Car21.sum()
+    assigned_sumod = 0
     iter_flag = 1
     while total_remain > 0:
         print(f"No.{iter_flag} iteration starts:")
@@ -719,7 +713,7 @@ def network_flow_model(
                 "flow",
             ]
         )
-
+        # breakpoint()
         # calculate the non-allocated flows and remaining flows
         (
             temp_flow_matrix,
@@ -727,12 +721,15 @@ def network_flow_model(
             isolated_flow_matrix,
         ) = update_od_matrix(temp_flow_matrix, remain_od)
 
+        assigned_sumod += temp_flow_matrix.flow.sum()
+        percentage_sumod = assigned_sumod / initial_sumod
+        # breakpoint()
         # update the isolated flows
         isolation.extend(isolated_flow_matrix.to_numpy().tolist())
 
         # calculate the remaining flows
-        number_of_origins = remain_od.origin_node.unique().shape[0]
-        number_of_destinations = remain_od.destination_node.unique().shape[0]
+        number_of_origins = remain_od.origin_node.nunique()
+        number_of_destinations = remain_od.destination_node.nunique()
         print(f"The remaining number of origins: {number_of_origins}")
         print(f"The remaining number of destinations: {number_of_destinations}")
         total_remain = remain_od.Car21.sum()
@@ -772,8 +769,8 @@ def network_flow_model(
         )  # estimated overflow: positive -> has overflow
         max_overflow = temp_edge_flow["est_overflow"].max()
         print(f"The maximum amount of edge overflow: {max_overflow}")
-
-        if max_overflow <= 0:
+        # breakpoint()
+        if max_overflow <= 0 or percentage_sumod > 0.9:
             # add/update edge key variables: flow/speed/capacity
             temp_edge_flow["acc_flow"] = (
                 temp_edge_flow["flow"] + temp_edge_flow["acc_flow"]
@@ -796,7 +793,17 @@ def network_flow_model(
                 ]
             )
             road_links = road_links.reset_index()
-            print("Iteration stops: there is no edge overflow!")
+            if max_overflow > 0:
+                print(
+                    "Iteration stops: "
+                    f"with {percentage_sumod * 100}% flows sent to the network!"
+                )
+            else:
+                print(
+                    "Iteration stops: there is no edge overflow! "
+                    f"with {percentage_sumod * 100}% flows sent to the network!"
+                )
+            # breakpoint()
             break
 
         # calculate the ratio of flow adjustment (0 < r < 1)
@@ -806,6 +813,7 @@ def network_flow_model(
             np.nan,
         )
         r = temp_edge_flow.r.min()
+        # breakpoint()
         if r < 0:
             print("Error: r < 0")
             break
@@ -841,7 +849,7 @@ def network_flow_model(
         road_links = road_links.reset_index()
 
         # update remaining od flows
-        remain_od["Car21"] = remain_od["Car21"] * (1 - r)
+        remain_od["Car21"] *= 1 - r
         remain_od.loc[remain_od.Car21 < 0.5, "Car21"] = 0
         total_remain = remain_od.Car21.sum()
         print(f"The total remaining supply (after flow adjustment) is: {total_remain}")
