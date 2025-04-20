@@ -416,21 +416,33 @@ def format_intersections(
 
 
 def main(depth_thres):
-    """Main function
-
-    Model Inputs
-    ------------
-    - damage_ratio_road_flood.xlsx: damage curves
-    - damage_cost_road_flood_uk.xlsx: asset damage values
-    - GB_road_links_with_bridges.gpq: network links
-    - intersections: module 2 output.
-
-    Outputs
-    -------
-    - pd.DataFrame:
-        intersections_with_damages (min, max, mean)
     """
+    Main function to calculate damage fractions and costs for disrupted road links
+        based on flood depth.
 
+    Model Inputs:
+        - damage_ratio_road_flood.xlsx:
+            Excel file containing damage curves for various road classifications and
+                flow conditions.
+        - damage_cost_road_flood_uk.xlsx:
+            Excel file containing asset damage values for roads, tunnels, and bridges.
+        - GB_road_links_with_bridges.gpq:
+            GeoDataFrame of road network links with attributes.
+        - intersections:
+            Output from module 2 containing intersection results with flood depth and
+                damage levels.
+
+    Model Outputs:
+        - intersections_with_damages.csv:
+            CSV file containing damage fractions and costs (min, max, mean) for
+                disrupted road links.
+
+    Parameters:
+        depth_thres (int): Flood depth threshold in centimeters for road closure.
+
+    Returns:
+        None: Outputs are saved to files.
+    """
     # damage curves
     damages_ratio_df = pd.read_excel(
         base_path / "damage_curves" / "damage_ratio_road_flood.xlsx"
@@ -494,7 +506,7 @@ def main(depth_thres):
         base_path.parent
         / "results"
         / "disruption_analysis"
-        / str(depth_thres)
+        / "30"  # str(depth_thres)
         / "intersections"
     ):
         for file in files:
@@ -507,7 +519,7 @@ def main(depth_thres):
             base_path.parent
             / "results"
             / "damage_analysis"
-            / str(depth_thres)
+            # / str(depth_thres)
             / f"{flood_key}_with_damage_values.csv"
         )
 
