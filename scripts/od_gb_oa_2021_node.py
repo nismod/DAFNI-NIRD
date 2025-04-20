@@ -45,8 +45,13 @@ uniheight_dict = rule_file.set_index("use")["unit_height_m"].to_dict()
 
 # Roads
 road_node_file = gpd.read_parquet(
-    base_path / "networks" / "road" / "osm_road_node_file.geoparquet"
+    base_path / "networks" / "road" / "GB_road_nodes_with_bridges.gpq"
 )  # nd_id
+
+if "nd_id" not in road_node_file.columns:
+    road_node_file["nd_id"] = road_node_file["id"]
+
+road_node_file.reset_index(drop=True, inplace=True)
 
 # OA admins (2021)
 admin_file = gpd.read_parquet(
@@ -62,7 +67,7 @@ od_file.rename(columns={"Car21": "Count21"}, inplace=True)  # 11,143,891 records
 od_file.reset_index(drop=True, inplace=True)
 
 # %%
-# Extract the centroids of UK buildings (30 min)
+# Extract the centroids of UK buildings (40 min)
 verisk["centroid"] = verisk.geometry.centroid
 verisk_centroids_gdf = verisk.drop(columns=["geometry"]).rename(
     columns={"centroid": "geometry"}
@@ -131,15 +136,18 @@ for node, v1 in weight_nr.items():
 weight_nr3 = convert_to_dict(weight_nr2)
 
 with open(
-    base_path / "census_datasets" / "verisk" / "osm_weight_non_residential.pkl",
+    base_path
+    / "census_datasets"
+    / "verisk"
+    / "weight_non_residential_with_bridges.pkl",
     "wb",
 ) as f:
     pickle.dump(weight_nr3, f)
 
 # %%
-# Estimate the total residential area (m2) of each OA
+# Estimate the total residential area (m2) of each OA (40min)
 nearest_node_dict = func.find_nearest_node(residential, road_node_file)
-weight_r = defaultdict(lambda: defaultdict(list))  # 40 mins: weight[node][oa] = area
+weight_r = defaultdict(lambda: defaultdict(list))  # weight[node][oa] = area
 for zidx in range(residential.shape[0]):
     admin = residential.loc[zidx, "OA21CD"]
     area = residential.loc[zidx, "gross_area_m2"]
@@ -155,7 +163,7 @@ for node, v1 in weight_r.items():
 weight_r3 = convert_to_dict(weight_r2)
 
 with open(
-    base_path / "census_datasets" / "verisk" / "osm_weight_residential.pkl",
+    base_path / "census_datasets" / "verisk" / "weight_residential_with_bridges.pkl",
     "wb",
 ) as f:
     pickle.dump(weight_r3, f)
@@ -179,7 +187,10 @@ for oa, list_of_nodes in transformed_weight_nr.items():
 
 node_weight_nr = convert_to_dict(node_weight_nr)
 with open(
-    base_path / "census_datasets" / "verisk" / "osm_node_weight_non_residential.pkl",
+    base_path
+    / "census_datasets"
+    / "verisk"
+    / "node_weight_non_residential_with_bridges.pkl",
     "wb",
 ) as f:
     pickle.dump(node_weight_nr, f)
@@ -203,7 +214,10 @@ for oa, list_of_nodes in transformed_weight_r.items():
 
 node_weight_r = convert_to_dict(node_weight_r)
 with open(
-    base_path / "census_datasets" / "verisk" / "osm_node_weight_residential.pkl",
+    base_path
+    / "census_datasets"
+    / "verisk"
+    / "node_weight_residential_with_bridges.pkl",
     "wb",
 ) as f:
     pickle.dump(node_weight_r, f)
@@ -271,6 +285,6 @@ temp_df_group = temp_df.groupby(
 
 # %%
 temp_df_group.to_csv(
-    base_path / "census_datasets" / "od_matrix" / "osm_od_gb_oa_2021_node.csv",
+    base_path / "census_datasets" / "od_matrix" / "od_gb_oa_2021_node_with_bridges.csv",
     index=False,
 )
