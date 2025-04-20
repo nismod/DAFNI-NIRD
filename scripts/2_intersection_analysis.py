@@ -424,22 +424,32 @@ def features_with_damage(
 
 
 def main(depth_thres):
-    """Main function
-
-    Model Inputs
-    ------
-    - edge_flows_32p.gpq: base scenario output
-    - GB_road_links_with_bridges.gpq: network element
-    - Thames Lloyd's RDS (RASTER): JBA Flood Map
-    - Thames Lloyd's RDS (Vector): Clip file
-
-    Model Outputs
-    -------
-    - intersections_x.pq: feature intersections with flood depth and damage level
-    - road_links_x.gpq: with maxmimum flood depth and damage level by aggregating the
-        corresponding intersections.
     """
+    Main function to perform disruption analysis on road networks under flood scenarios.
 
+    Model Inputs:
+        - edge_flows_32p.gpq:
+            Base scenario output containing road network simulation results.
+        - GB_road_links_with_bridges.gpq:
+            GeoDataFrame of road network elements with attributes.
+        - JBA Flood Map (RASTER):
+            Raster data representing flood scenarios.
+        - JBA Flood Map (Vector):
+            Vector data used for clipping road links to flood extents.
+
+    Model Outputs:
+        - intersections_x.pq:
+            GeoDataFrame of feature intersections with flood depth and damage levels.
+        - road_links_x.gpq:
+            GeoDataFrame of road links with aggregated maximum flood depth and
+                damage levels.
+
+    Parameters:
+        depth_thres (int): Flood depth threshold in centimeters for road closure.
+
+    Returns:
+        None: Outputs are saved to files.
+    """
     # base scenario simulation results
     base_scenario_links = gpd.read_parquet(
         base_path.parent / "results" / "base_scenario" / "edge_flows_32p.gpq"
@@ -494,13 +504,9 @@ def main(depth_thres):
     event_dict = defaultdict(lambda: defaultdict(list))
     for flood_type, list_of_events in event_files.items():
         for event_path in list_of_events:
-            # event_key = "_".join(
-            #     Path(event_path).stem.split("_")[:2]
-            # )  # rename events under "both" category
-            # event_key = event_path.split("\\")[6].split("_")[0]
             event_key = Path(event_path).parts[9].split("_")[0]
             event_dict[event_key][flood_type].append(event_path)
-    print(event_dict)
+
     # analysis
     for flood_key, v in event_dict.items():
         # road links
@@ -561,7 +567,9 @@ def main(depth_thres):
             print("Warning: intersections result is empty!")
             # breakpoint()
             continue
-        intersections.to_parquet(out_path / f"intersections_{flood_key}.pq")
+        intersections.to_parquet(
+            out_path / "intersections" / f"intersections_{flood_key}.pq"
+        )
 
         # road integrations
         road_links = features_with_damage(
@@ -602,7 +610,7 @@ def main(depth_thres):
             ),
             axis=1,
         )
-        road_links.to_parquet(out_path / f"road_links_{flood_key}.gpq")
+        road_links.to_parquet(out_path / "links" / f"road_links_{flood_key}.gpq")
 
 
 if __name__ == "__main__":
@@ -610,8 +618,8 @@ if __name__ == "__main__":
         depth_thres = int(sys.argv[1])
     except (IndexError, ValueError):
         print(
-            "Error: Please provide the flood depth for road closure (e.g., 30 or "
-            "60 cm)!"
+            "Error: Please provide the flood depth for road closure "
+            "(e.g., 15, 30 or 60 cm)!"
         )
         sys.exit(1)
     main(depth_thres)
