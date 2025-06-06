@@ -116,3 +116,4 @@ scripts/snkit
 *.tar.gz
 test_inputs
 test_outputs
+local_copy
