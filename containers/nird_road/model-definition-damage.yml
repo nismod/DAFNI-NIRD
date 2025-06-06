@@ -19,23 +19,7 @@ metadata:
     vulnerability and expected repair/reconstruction costs.
 spec:
   inputs:
-    parameters:
-      - name: NCPUS
-        title: Number of CPUs
-        description: Parallelism within model run
-        type: integer
-        default: 16
-        min: 0
-        max: 20
-        required: false
-      - name: DEPTH_THRESHOLD
-        title: Depth threshold
-        description: Depth threshold for disruption (cm)
-        type: integer
-        default: 30
-        min: 0
-        max: 100
-        required: false
+    parameters: []
     dataslots:
       - name: Model parameters
         description: >

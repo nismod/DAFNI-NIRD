@@ -87,20 +87,27 @@ Then open a browser at the address shown (e.g. `http://0.0.0.0:8000`).
 
 ## Docker and DAFNI
 
+This repository builds two images: `nismod/nird_road-recovery` and
+`nismod/nird_road-damages`. The Dockerfiles, wrapper shell scripts and DAFNI
+metadata model definitions are found in this repository at
+`containers/nird_road`.
+
 ```bash
 # Build the image - run this from the root of the repository
-docker build -f ./containers/nird_road/Dockerfile -t nismod/nird_road:latest .
+docker build -f ./containers/nird_road/Dockerfile-recovery -t nismod/nird_road-recovery:latest .
 ```
 
 ```bash
 # Run image using test data - run this from the data directory
-docker run --rm -v ${PWD}/test_inputs:/data/inputs -v ${PWD}/test_outputs:/data/outputs --env NUMBER_CPUS=1 --env DEPTH_THRESHOLD=30 nismod/nird_road
+docker run --rm -v ${PWD}/test_inputs:/data/inputs -v ${PWD}/test_outputs:/data/outputs --env NUMBER_CPUS=1 --env DEPTH_THRESHOLD=30 nismod/nird_road-recovery
 ```
 
 ```bash
 # Save image to file
-docker save -o nird_road.tar nismod/nird_road:latest
+docker save -o nird_road-recovery.tar nismod/nird_road-recovery:latest
 ```
+
+Then upload the saved image and corresponding model definition `.yml` to DAFNI.
 
 ## Acknowledgments
 
