@@ -1,0 +1,17 @@
+# environment
+FROM mambaorg/micromamba:1.5.7-bookworm-slim
+COPY --chown=$MAMBA_USER:$MAMBA_USER containers/nird_road/environment.yaml /tmp/env.yaml
+RUN micromamba install -y -n base -f /tmp/env.yaml && \
+    micromamba clean --all --yes
+ARG MAMBA_DOCKERFILE_ACTIVATE=1
+
+COPY --chown=$MAMBA_USER:$MAMBA_USER src/nird ./src/nird/
+# COPY scripts/nird_3_damage_analysis.py .
+COPY scripts/nird_4_rerouting_and_recovery.py .
+COPY pyproject.toml .
+COPY README.md .
+RUN python -m pip install .
+
+COPY containers/nird_road/dafni-run-recovery.sh .
+# CMD DEPTH_THRESHOLD=30 bash dafni-run.sh
+CMD bash dafni-run-recovery.sh

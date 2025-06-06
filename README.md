@@ -85,6 +85,23 @@ python -m http.server
 
 Then open a browser at the address shown (e.g. `http://0.0.0.0:8000`).
 
+## Docker and DAFNI
+
+```bash
+# Build the image - run this from the root of the repository
+docker build -f ./containers/nird_road/Dockerfile -t nismod/nird_road:latest .
+```
+
+```bash
+# Run image using test data - run this from the data directory
+docker run --rm -v ${PWD}/test_inputs:/data/inputs -v ${PWD}/test_outputs:/data/outputs --env NUMBER_CPUS=1 --env DEPTH_THRESHOLD=30 nismod/nird_road
+```
+
+```bash
+# Save image to file
+docker save -o nird_road.tar nismod/nird_road:latest
+```
+
 ## Acknowledgments
 
 This project was developed as part of a UKRI-funded research grant, reference ST/Y003780/1,

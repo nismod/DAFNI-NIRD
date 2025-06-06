@@ -1,0 +1,50 @@
+kind: M
+api_version: v1beta3
+metadata:
+  display_name: NIRD Road Recovery Model(v0.1.1)
+  name: nird-road-recovery
+  summary: Road asset recovery and rerouting analysis
+  type: model
+  publisher: University of Oxford
+  contact_point_name: Yue Li
+  contact_point_email: yue.li@ouce.ox.ac.uk
+  description: >
+    This model dynamically evaluate indirect damages by designing various road capacity
+    recovery rates, accounting for road types and damage levels. The recovery process
+    identifies disrupted flows resulting from missing routes or reduced speeds, and
+    reallocates these flows as road capacities are restored on a daily basis. The
+    analysis captures the evolving number of isolated flows, rerouting costs and asset
+    repair costs, offering a more realistic representation of dynamic indirect damages.
+spec:
+  inputs:
+    parameters:
+      - name: NUMBER_CPUS
+        title: Number of CPUs
+        description: Parallelism within model run
+        type: integer
+        default: 1
+        min: 1
+        max: 20
+        required: true
+    dataslots:
+      - name: Model parameters
+        description: >
+          JSON files with model parameters.
+        default:
+          - 961d7ae8-1368-4f49-93ee-995de1767afc
+        path: inputs/parameters
+        required: true
+      - name: Road links with damage levels
+        description: >
+          parquet file that contains road links with flood depth and damage level
+        default:
+          - 040d5180-a0c7-4f6b-a025-1a2f8174c517
+        path: inputs/links
+        required: true
+      - name: OD Matrix
+        description: >
+          parquet file that contains passenger travel-to-work flows (base scenario)
+        default:
+          - da58a53f-5bbb-4b31-b496-6dcc0cfcb1c6
+        path: inputs/od
+        required: true

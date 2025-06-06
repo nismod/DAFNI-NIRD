@@ -1,12 +1,21 @@
-name: nird_road
+name: skmob
 channels:
   - conda-forge
+  - nodefaults
 dependencies:
-  - python=3.10
-  - pip
-  - pandas
-  - python-igraph=0.9.*
-  - tqdm
+  - python=3.12
   - geopandas
-  - snkit
+  - pandas
   - pyarrow
+  - python-igraph=0.11.*
+  - rasterio
+  - requests
+  - scikit-learn
+  - snkit
+  - tqdm
+  - xarray
+  - gdal
+  - pip
+  - pip:
+    - nismod-snail
+    - fastparquet

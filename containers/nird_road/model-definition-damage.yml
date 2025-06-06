@@ -1,0 +1,67 @@
+kind: M
+api_version: v1beta3
+metadata:
+  display_name: NIRD Road Damage Model(v0.1.1)
+  name: nird-road-damage
+  summary: Road asset direct damages calculation.
+  type: model
+  publisher: University of Oxford
+  contact_point_name: Yue Li
+  contact_point_email: yue.li@ouce.ox.ac.uk
+  description: >
+    This model estimates the direct road damage caused by flood by integrating
+    asset-specific damage curves and costs. It considers different road asset types
+    (e.g., bridges, tunnels, and ordinary roads), reflecting variations in construction
+    and repair expenses. Additionally, the model incorporates flood-specific flow
+    conditions, accounting for different flood types such as river floods, surface
+    floods, and coastal floods. By applying tailored damage curves for each asset type
+    and flood condition, the model provides a detailed assessment of infrastructure
+    vulnerability and expected repair/reconstruction costs.
+spec:
+  inputs:
+    parameters:
+      - name: NCPUS
+        title: Number of CPUs
+        description: Parallelism within model run
+        type: integer
+        default: 16
+        min: 0
+        max: 20
+        required: false
+      - name: DEPTH_THRESHOLD
+        title: Depth threshold
+        description: Depth threshold for disruption (cm)
+        type: integer
+        default: 30
+        min: 0
+        max: 100
+        required: false
+    dataslots:
+      - name: Model parameters
+        description: >
+          JSON files with model parameters.
+        default:
+          - 961d7ae8-1368-4f49-93ee-995de1767afc
+        path: inputs/parameters
+        required: true
+      - name: Tables
+        description: >
+          excel files with damage curves or asset costs
+        default:
+          - 06f5a879-924c-4ec3-9003-ba8f7cf4781c
+        path: inputs/tables
+        required: true
+      - name: Road networks
+        description: >
+          parquet file of GB road networks with bridges
+        default:
+          - 40e586e5-d398-4144-a67c-6e6454745a10
+        path: inputs/networks
+        required: true
+      - name: Intersections
+        description: >
+          parquet file that containes road intersections with damage levels
+        default:
+          - eae96dce-0376-4ff0-b560-124e2d626108
+        path: inputs/intersections
+        required: true
