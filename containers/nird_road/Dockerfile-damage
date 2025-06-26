@@ -7,6 +7,7 @@ ARG MAMBA_DOCKERFILE_ACTIVATE=1
 
 COPY --chown=$MAMBA_USER:$MAMBA_USER src/nird ./src/nird/
 COPY scripts/nird_3_damage_analysis.py .
+COPY scripts/visualise_damage_analysis.ipynb .
 COPY pyproject.toml .
 COPY README.md .
 RUN python -m pip install .

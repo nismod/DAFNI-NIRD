@@ -1,7 +1,7 @@
 kind: M
 api_version: v1beta3
 metadata:
-  display_name: NIRD Road Damage Model(v0.1.1)
+  display_name: NIRD Road Damage Model(v0.2.0)
   name: nird-road-damage
   summary: Road asset direct damages calculation.
   type: model

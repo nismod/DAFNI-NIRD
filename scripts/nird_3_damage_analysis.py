@@ -8,6 +8,8 @@ import numpy as np
 import pandas as pd
 
 from snail import damages
+import matplotlib.pyplot as plt
+import contextily as ctx
 
 warnings.simplefilter("ignore")
 
@@ -495,10 +497,31 @@ def main():
     intersections_with_damage = calculate_damage(
         intersections, damage_curves, damage_values
     )
-    intersections_with_damage = (
+
+    # aggregate damage values for road links
+    # attributes
+    intersections_with_damage_gp1 = (
+        intersections_with_damage[
+            [
+                "e_id",
+                "road_classification",
+                "form_of_way",
+                "trunk_road",
+                "urban",
+                "lanes",
+                "averageWidth",
+                "road_label",
+            ]
+        ]
+        .groupby(by=["e_id"], as_index=False)
+        .first()
+    )
+    # numeric values
+    intersections_with_damage_gp2 = (
         pd.concat(
             [
                 intersections_with_damage["e_id"],
+                intersections_with_damage["length"],
                 intersections_with_damage.iloc[:, -48:],
             ],
             axis=1,
@@ -508,9 +531,73 @@ def main():
         .sum()  # sum up damage values of all segments -> disrupted links
     )
 
+    # merge attributes and numeric values
+    common_cols = intersections_with_damage_gp1.columns.intersection(
+        intersections_with_damage_gp2.columns
+    ).tolist()
+    intersections_with_damage_final = intersections_with_damage_gp1.merge(
+        intersections_with_damage_gp2, on=common_cols, how="left"
+    )
+
+    # modify the value of damage fractions to be no greater than 1.0
+    fraction_cols = intersections_with_damage_final.filter(like="fraction").columns
+    intersections_with_damage_final[fraction_cols] = intersections_with_damage_final[
+        fraction_cols
+    ].clip(upper=1.0)
+
     # export results
-    intersections_with_damage.to_csv(
-        base_path.parent / "outputs" / "intersections17_with_damages.csv", index=False
+    intersections_with_damage_final.to_csv(
+        base_path.parent / "outputs" / "intersections17_with_damages_updated.csv",
+        index=False,
+    )
+
+    # create map for visualisation
+    intersections_with_damage_final = intersections_with_damage_final[
+        intersections_with_damage_final.C6_river_damage_value_mean > 0
+    ]
+    intersections_with_damage_final = intersections_with_damage_final[
+        ["e_id"]
+        + intersections_with_damage_final.filter(like="damage_value").columns.tolist()
+    ]
+    road_links_merge = road_links.merge(
+        intersections_with_damage_final, on="e_id", how="left"
+    )
+    road_links_merge = road_links_merge[road_links_merge.C6_river_damage_value_mean > 0]
+    road_links_merge.reset_index(drop=True, inplace=True)
+    fig, ax = plt.subplots(figsize=(8, 8))
+
+    # Plot the road links with damage values
+    road_links_merge.plot(
+        column="C6_river_damage_value_mean",
+        cmap="terrain",
+        legend=True,
+        ax=ax,
+        legend_kwds={
+            "label": "Damage Value (£ million)",
+            "shrink": 0.5,  # Adjusts the size of the colourbar
+        },
+    )
+
+    ctx.add_basemap(
+        ax,
+        source=ctx.providers.CartoDB.Positron,
+        crs=road_links_merge.crs.to_string(),  # Ensure CRS matches
+    )
+
+    ax.set_title(
+        "Average Road Damage from River Flooding (C6 Damage Curve)",
+        fontsize=11,
+        fontweight="bold",
+        pad=20,
+    )
+    ax.set_axis_off()
+    plt.tight_layout()
+
+    # Save the figure
+    plt.savefig(
+        base_path.parent / "outputs" / "road_damage_map.png",
+        dpi=300,
+        bbox_inches="tight",
     )
 
 
