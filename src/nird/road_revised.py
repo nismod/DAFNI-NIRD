@@ -807,7 +807,7 @@ def network_flow_model(
             isolated_flow_matrix,
         ) = update_od_matrix(temp_flow_matrix, remain_od)
 
-        assigned_sumod += temp_flow_matrix.flow.sum()
+        assigned_sumod += temp_flow_matrix["flow"].sum()
         percentage_sumod = assigned_sumod / initial_sumod
         # update the isolated flows
         isolation.extend(isolated_flow_matrix.to_numpy().tolist())
@@ -851,10 +851,12 @@ def network_flow_model(
         temp_edge_flow["est_overflow"] = (
             temp_edge_flow["flow"] - temp_edge_flow["acc_capacity"]
         )  # estimated overflow: positive -> has overflow
+
         max_overflow = temp_edge_flow["est_overflow"].max()
         print(f"The maximum amount of edge overflow: {max_overflow}")
 
-        if max_overflow <= 0 or percentage_sumod > 0.9:
+        # Stop: at least 90% of flows are sent to the network without causing overflow
+        if max_overflow <= 0 and percentage_sumod > 0.9:
             # update the origin-destination-path-cost matrix
             odpfc.extend(temp_flow_matrix.to_numpy().tolist())
 
@@ -900,16 +902,10 @@ def network_flow_model(
             # total cost
             total_cost += time_equiv_cost + operating_cost + toll_cost
 
-            if max_overflow > 0:
-                print(
-                    "Iteration stops: "
-                    f"with {percentage_sumod * 100}% flows sent to the network!"
-                )
-            else:
-                print(
-                    "Iteration stops: there is no edge overflow! "
-                    f"with {percentage_sumod * 100}% flows sent to the network!"
-                )
+            print(
+                "Iteration stops: there is no edge overflow! "
+                f"with {percentage_sumod * 100}% flows sent to the network!"
+            )
             break
 
         # calculate the ratio of flow adjustment (0 < r < 1)
