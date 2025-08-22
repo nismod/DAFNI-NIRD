@@ -7,7 +7,7 @@ import pandas as pd
 import geopandas as gpd  # type: ignore
 
 from nird.utils import load_config
-import nird.road_validation as func
+import nird.road_revised as func
 
 import json
 import warnings
@@ -73,6 +73,7 @@ def main(num_of_cpu):
     # initialise road links
     road_links = func.edge_init(
         road_link_file,
+        flow_breakpoint_dict,
         flow_capacity_dict,
         free_flow_speed_dict,
         urban_speed_dict,
@@ -80,12 +81,12 @@ def main(num_of_cpu):
         max_flow_speed_dict=None,
     )
     # create igraph network
-    network = func.create_igraph_network(road_links)
+    network, road_links = func.create_igraph_network(road_links)
     # run flow simulation
     (
         road_links,
         isolation,
-        _,
+        odpfc,
     ) = func.network_flow_model(
         road_links,
         network,
@@ -93,12 +94,25 @@ def main(num_of_cpu):
         flow_breakpoint_dict,
         num_of_cpu,
     )
-    isolation = pd.DataFrame(
+
+    isolation_df = pd.DataFrame(
         isolation,
         columns=[
             "origin_node",
             "destination_node",
             "flow",
+        ],
+    )
+    odpfc_df = pd.DataFrame(
+        odpfc,
+        columns=[
+            "origin",
+            "destination",
+            "path",
+            "flow",
+            "fuel_cost_per_flow",
+            "time_cost_per_flow",
+            "toll_cost_per_flow",
         ],
     )
     print(f"The total simulation time: {time.time() - start_time}")
@@ -107,8 +121,11 @@ def main(num_of_cpu):
     road_links.to_parquet(
         base_path.parent / "outputs" / "base_scenario" / "edge_flows_validation.gpq"
     )
-    isolation.to_csv(
-        base_path.parent / "outputs" / "base_scenario" / "trip_isolation_validation.csv"
+    isolation_df.to_parquet(
+        base_path.parent / "outputs" / "base_scenario" / "trip_isolation_validation.pq"
+    )
+    odpfc_df.to_parquet(
+        base_path.parent / "outputs" / "base_scenario" / "trip_isolation_validation.pq"
     )
 
 
