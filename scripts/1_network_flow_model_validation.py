@@ -9,11 +9,12 @@ import geopandas as gpd  # type: ignore
 from nird.utils import load_config
 import nird.road_revised as func
 
+import logging
 import json
 import warnings
 
 warnings.simplefilter("ignore")
-base_path = Path(load_config()["paths"]["base_path"])
+base_path = Path("/data/DAFNI_NIRD/data/processed_data")
 
 
 def main(num_of_cpu):
@@ -57,13 +58,12 @@ def main(num_of_cpu):
 
     # network links -> network links with bridges
     road_link_file = gpd.read_parquet(
-        base_path / "networks" / "road" / "GB_road_links_with_bridges.gpq"
+        base_path / "networks" / "GB_road_links_with_bridges.gpq"
     )
     # od matrix (2021) -> updated to od with bridges
     od_node_2021 = pd.read_csv(
         base_path
         / "census_datasets"
-        / "od_matrix"
         / "od_gb_oa_2021_node_with_bridges.csv"
     )
     od_node_2021["Car21"] = od_node_2021["Car21"] * 2
@@ -71,6 +71,7 @@ def main(num_of_cpu):
     print(f"total flows: {od_node_2021.Car21.sum()}")
 
     # initialise road links
+    logging.info("Generate road links")
     road_links = func.edge_init(
         road_link_file,
         flow_breakpoint_dict,
@@ -81,8 +82,10 @@ def main(num_of_cpu):
         max_flow_speed_dict=None,
     )
     # create igraph network
+    logging.info("Create igraph network")
     network, road_links = func.create_igraph_network(road_links)
     # run flow simulation
+    logging.info("Run simulation")
     (
         road_links,
         isolation,
@@ -115,7 +118,7 @@ def main(num_of_cpu):
             "toll_cost_per_flow",
         ],
     )
-    print(f"The total simulation time: {time.time() - start_time}")
+    logging.info(f"The total simulation time: {time.time() - start_time}")
 
     # export files
     road_links.to_parquet(
@@ -140,6 +143,7 @@ if __name__ == "__main__":
     Returns:
         None: Prints a message if the required argument is missing.
     """
+    logging.basicConfig(format="%(asctime)s %(process)d %(filename)s %(message)s", level=logging.INFO)
     try:
         num_of_cpu = int(sys.argv[1])
         main(num_of_cpu)
