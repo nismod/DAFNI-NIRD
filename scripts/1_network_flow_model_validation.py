@@ -68,7 +68,15 @@ def main(num_of_cpu):
     )
     od_node_2021["Car21"] = od_node_2021["Car21"] * 2
     # od_node_2021 = od_node_2021.head(100)  # debug
-    print(f"total flows: {od_node_2021.Car21.sum()}")
+    logging.info(f"\n{od_node_2021}")
+    logging.info(f"Total flows: {od_node_2021.Car21.sum()}")
+
+    sample = 1000
+    if sample:
+        logging.info(f"For testing, sampling every {sample} flows")
+        od_node_2021 = od_node_2021.iloc[::sample]
+        logging.info(f"\n{od_node_2021}")
+        logging.info(f"Total flows: {od_node_2021.Car21.sum()}")
 
     # initialise road links
     logging.info("Generate road links")
