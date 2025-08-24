@@ -743,12 +743,17 @@ def network_flow_model(
 
         # batch-processing
         st = time.time()
-        with Pool(
-            processes=num_of_cpu,
-            initializer=worker_init_path,
-            initargs=(shared_network_pkl,),
-        ) as pool:
-            list_of_spath = pool.map(find_least_cost_path, args)
+        if num_of_cpu > 1:
+            with Pool(
+                processes=num_of_cpu,
+                initializer=worker_init_path,
+                initargs=(shared_network_pkl,),
+            ) as pool:
+                list_of_spath = pool.map(find_least_cost_path, args)
+        else:
+            global shared_network
+            shared_network = network
+            list_of_spath = [find_least_cost_path(arg) for arg in args]
             # -> [origin(name), destinations(name), path(idx), flow(int)]
         print(f"The least-cost path flow allocation time: {time.time() - st}.")
         temp_flow_matrix = (
