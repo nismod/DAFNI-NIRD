@@ -731,16 +731,19 @@ def network_flow_model(
         # find the least-cost path for each OD trip
         list_of_spath = []
         args = []
-        # origin-destinations-flows
-        list_of_origin_nodes = list(set(remain_od["origin_node"].tolist()))
-        for origin_node in list_of_origin_nodes:
-            destination_nodes = remain_od.loc[
-                remain_od["origin_node"] == origin_node, "destination_node"
-            ].tolist()
-            flows = remain_od.loc[
-                remain_od["origin_node"] == origin_node, "Car21"
-            ].tolist()
-            args.append((origin_node, destination_nodes, flows))
+        logging.info("Creating argument list")
+        remain_od = remain_od.set_index("origin_node")
+        list_of_origin_nodes = remain_od.index.unique()
+        for origin_node in tqdm(list_of_origin_nodes):
+            # Use an index to select elements -- faster than creating a mask
+            subset = remain_od.loc[origin_node, ["destination_node", "Car21"]]
+            if isinstance(subset, pd.DataFrame):  # Multiple destination nodes
+                args.append((origin_node, subset.destination_node.tolist(), subset.Car21.tolist()))
+            elif isinstance(subset, pd.Series):  # Single destination node
+                args.append((origin_node, [subset.destination_node], [subset.Car21]))
+            else:
+                raise ValueError(f"{subset=} is of unexpected {type(subset)=}")
+        remain_od = remain_od.reset_index()
 
         # batch-processing
         st = time.time()
