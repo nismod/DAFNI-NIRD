@@ -1,20 +1,21 @@
 """Road Network Flow Model - Functions"""
 
-import sys
-from typing import Tuple, List, Dict
 from collections import defaultdict
+import logging
+from multiprocessing import Pool
+import pickle
+import sys
+import time
+from typing import Tuple, List, Dict
+import warnings
 
-import numpy as np
-import pandas as pd
 import geopandas as gpd  # type: ignore
 import igraph  # type: ignore
+import numpy as np
+import pandas as pd
+from tqdm import tqdm
 
 import nird.constants as cons
-
-from multiprocessing import Pool
-import warnings
-import pickle
-import time
 
 warnings.simplefilter("ignore")
 
