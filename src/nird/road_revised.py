@@ -652,7 +652,7 @@ def itter_path(
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     fuels, times, tolls = [], [], []
     edge_flow_dict = defaultdict(float)
-    for row in temp_flow_matrix.itertuples():
+    for row in tqdm(temp_flow_matrix.itertuples()):
         path = getattr(row, "path")
         flow = getattr(row, "flow")
         time = toll = fuel = 0.0
