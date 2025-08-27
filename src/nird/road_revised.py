@@ -408,6 +408,7 @@ def create_igraph_network(
     road_links: gpd.GeoDataFrame,
 ) -> igraph.Graph:
     """Create an undirected igraph network."""
+    cols = road_links.columns.tolist()
     road_links["edge_length_mile"] = (
         road_links.geometry.length * cons.CONV_METER_TO_MILE
     )
@@ -445,6 +446,8 @@ def create_igraph_network(
     if len(road_links[road_links.e_idx.isnull()]) > 0:
         print("Error: cannot find e_id in the network!")
         sys.exit()
+    road_links = road_links[cols + ["e_idx"]]
+
     return network, road_links
 
 
@@ -501,9 +504,7 @@ def update_network_structure(
 
     #!!! when road link is fully used, it will not be included into the network
     road_links["e_idx"] = road_links["e_id"].map(index_map)
-    # if len(road_links[road_links.e_idx.isnull()]) > 0:
-    #     print("Error: cannot find e_id in the network!")
-    #     sys.exit()
+
     return network, road_links
 
 
@@ -570,7 +571,8 @@ def update_od_matrix(
     isolated_flow_matrix = temp_flow_matrix.loc[
         mask, ["origin", "destination", "flow"]
     ]  # drop the cost columns
-    print(f"Non_allocated_flow: {isolated_flow_matrix.flow.sum()}")
+    temp_isolation = isolated_flow_matrix.flow.sum()
+    # print(f"Non_allocated_flow: {}")
     temp_flow_matrix = temp_flow_matrix[~mask]
     remain_origins = temp_flow_matrix.origin.unique().tolist()
     remain_destinations = temp_flow_matrix.destination.unique().tolist()
@@ -581,7 +583,7 @@ def update_od_matrix(
         )
     ].reset_index(drop=True)
 
-    return temp_flow_matrix, remain_od, isolated_flow_matrix
+    return temp_flow_matrix, remain_od, isolated_flow_matrix, temp_isolation
 
 
 def find_least_cost_path(
@@ -649,6 +651,7 @@ def itter_path(
     network,
     temp_flow_matrix: pd.DataFrame,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Iterate through all the paths to calculate edge flows and travel costs."""
     fuels, times, tolls = [], [], []
     edge_flow_dict = defaultdict(float)
     for row in temp_flow_matrix.itertuples():
@@ -695,6 +698,7 @@ def network_flow_model(
     isolation: non-allocated od matrix
     odpfc: allocated od matrix
     """
+    road_links_columns = road_links.columns.tolist()
 
     total_remain = remain_od["Car21"].sum()
     print(f"The initial supply is {total_remain}")
@@ -717,13 +721,14 @@ def network_flow_model(
         mask = remain_od["origin_node"].isin(network.vs["name"]) & (
             remain_od["destination_node"].isin(network.vs["name"])
         )
-        isolation.extend(
-            remain_od.loc[
-                ~mask, ["origin_node", "destination_node", "Car21"]
-            ].values.tolist()
-        )
+        isolated_flow_matrix = remain_od.loc[
+            ~mask, ["origin_node", "destination_node", "Car21"]
+        ]
+        isolation.extend(isolated_flow_matrix.values.tolist())
         remain_od = remain_od[mask].reset_index(drop=True)
-
+        temp_isolation = isolated_flow_matrix.Car21.sum()
+        print(f"Initial isolated flows: {temp_isolation}")
+        initial_sumod -= temp_isolation
         # dump the network and edge weight for shared use in multiprocessing
         shared_network_pkl = pickle.dumps(network)
 
@@ -775,15 +780,14 @@ def network_flow_model(
             temp_flow_matrix,  # to-be-allocated: origin-destination-path-flow
             remain_od,  # remain od: origin-destination-flow
             isolated_flow_matrix,  # isolated od: origin-destination-flow
+            temp_isolation,
         ) = update_od_matrix(temp_flow_matrix, remain_od)
         # update isolation: [origin, destination, flow]
+        print(f"Non_allocated_flow: {temp_isolation}")
+        initial_sumod -= temp_isolation
         isolation.extend(isolated_flow_matrix.to_numpy().tolist())
 
         # calculate the total remaining flows
-        number_of_origins = remain_od["origin_node"].unique().shape[0]
-        number_of_destinations = remain_od["destination_node"].unique().shape[0]
-        print(f"The remaining number of origins: {number_of_origins}")
-        print(f"The remaining number of destinations: {number_of_destinations}")
         total_remain = remain_od["Car21"].sum()
         if total_remain == 0:
             print("Iteration stops: there is no remaining flows!")
@@ -801,11 +805,13 @@ def network_flow_model(
         temp_edge_flow = temp_edge_flow.merge(
             road_links[["e_idx", "acc_capacity"]], on="e_idx", how="left"
         )
-        r = np.where(
-            temp_edge_flow["flow"] != 0,
-            temp_edge_flow["acc_capacity"] / temp_edge_flow["flow"],
-            np.nan,
-        ).min()  # check the minimum percentage of the to-be-allocated flows
+        r = np.nanmin(
+            np.where(
+                temp_edge_flow["flow"] != 0,
+                temp_edge_flow["acc_capacity"] / temp_edge_flow["flow"],
+                np.nan,
+            )
+        )  # check the minimum percentage of the to-be-allocated flows
         # that could be successfully allocated to the network
 
         # %%
@@ -864,8 +870,8 @@ def network_flow_model(
         percentage_sumod = assigned_sumod / initial_sumod
         if r > 1 and percentage_sumod > 0.9:
             print(
-                f"Stop: {percentage_sumod*100}% of flows have been allocated and "
-                "there is no edge overflow!"
+                f"Stop: {percentage_sumod*100}% of flows (exc. isolations) have been "
+                "allocated and there is no edge overflow!"
             )
             break
         # %%
@@ -878,7 +884,7 @@ def network_flow_model(
     # update the road links attributes
     road_links.acc_flow = road_links.acc_flow.astype(int)
     road_links.acc_capacity = road_links.acc_capacity.astype(int)
-    road_links = road_links.iloc[:, 0:38]  # drop mid-columns
+    road_links = road_links[road_links_columns]
 
     print("The flow simulation is completed!")
     print(f"total travel cost is (£): {total_cost}")
