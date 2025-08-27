@@ -157,4 +157,4 @@ if __name__ == "__main__":
         num_of_cpu, sample_stride = sys.argv[1:]
         main(int(num_of_cpu), int(sample_stride))
     except IndexError or NameError:
-        print("Please enter the required number of CPUs!")
+        logging.info("Please enter the required number of CPUs!")

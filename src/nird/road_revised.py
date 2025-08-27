@@ -444,7 +444,7 @@ def create_igraph_network(
     index_map = {eid: idx for idx, eid in enumerate(network.es["e_id"])}
     road_links["e_idx"] = road_links["e_id"].map(index_map)
     if len(road_links[road_links.e_idx.isnull()]) > 0:
-        print("Error: cannot find e_id in the network!")
+        logging.info("Error: cannot find e_id in the network!")
         sys.exit()
     return network, road_links
 
@@ -474,9 +474,9 @@ def update_network_structure(
     network.delete_edges(list(zero_capacity_edges))
     num_of_edges_update = len(list(network.es))
     if num_of_edges_update == num_of_edges:
-        print("The network structure does not change!")
+        logging.info("The network structure does not change!")
         return network, road_links
-    print(f"The remaining number of edges in the network: {num_of_edges_update}")
+    logging.info(f"The remaining number of edges in the network: {num_of_edges_update}")
 
     # update edges' weights
     remaining_edges = network.es["e_id"]
@@ -503,7 +503,7 @@ def update_network_structure(
     #!!! when road link is fully used, it will not be included into the network
     road_links["e_idx"] = road_links["e_id"].map(index_map)
     # if len(road_links[road_links.e_idx.isnull()]) > 0:
-    #     print("Error: cannot find e_id in the network!")
+    #     logging.info("Error: cannot find e_id in the network!")
     #     sys.exit()
     return network, road_links
 
@@ -571,7 +571,7 @@ def update_od_matrix(
     isolated_flow_matrix = temp_flow_matrix.loc[
         mask, ["origin", "destination", "flow"]
     ]  # drop the cost columns
-    print(f"Non_allocated_flow: {isolated_flow_matrix.flow.sum()}")
+    logging.info(f"Non_allocated_flow: {isolated_flow_matrix.flow.sum()}")
     temp_flow_matrix = temp_flow_matrix[~mask]
     remain_origins = temp_flow_matrix.origin.unique().tolist()
     remain_destinations = temp_flow_matrix.destination.unique().tolist()
@@ -698,13 +698,13 @@ def network_flow_model(
     """
 
     total_remain = remain_od["Car21"].sum()
-    print(f"The initial supply is {total_remain}")
+    logging.info(f"The initial supply is {total_remain}")
     number_of_edges = len(list(network.es))
-    print(f"The initial number of edges in the network: {number_of_edges}")
+    logging.info(f"The initial number of edges in the network: {number_of_edges}")
     number_of_origins = remain_od["origin_node"].unique().shape[0]
-    print(f"The initial number of origins: {number_of_origins}")
+    logging.info(f"The initial number of origins: {number_of_origins}")
     number_of_destinations = remain_od["destination_node"].unique().shape[0]
-    print(f"The initial number of destinations: {number_of_destinations}")
+    logging.info(f"The initial number of destinations: {number_of_destinations}")
 
     # starts
     total_cost = cost_time = cost_fuel = cost_toll = 0
@@ -713,7 +713,7 @@ def network_flow_model(
     assigned_sumod = 0
     iter_flag = 1
     while total_remain > 0:
-        print(f"No.{iter_flag} iteration starts:")
+        logging.info(f"No.{iter_flag} iteration starts:")
         # check isolations: [origin_node, destination_node, flow]
         mask = remain_od["origin_node"].isin(network.vs["name"]) & (
             remain_od["destination_node"].isin(network.vs["name"])
@@ -762,7 +762,7 @@ def network_flow_model(
             shared_network = network
             list_of_spath = [find_least_cost_path(arg) for arg in args]
             # -> [origin(name), destinations(name), path(idx), flow(int)]
-        print(f"The least-cost path flow allocation time: {time.time() - st}.")
+        logging.info(f"The least-cost path flow allocation time: {time.time() - st}.")
         temp_flow_matrix = (
             pd.DataFrame(
                 list_of_spath,
@@ -794,11 +794,11 @@ def network_flow_model(
         # calculate the total remaining flows
         number_of_origins = remain_od["origin_node"].unique().shape[0]
         number_of_destinations = remain_od["destination_node"].unique().shape[0]
-        print(f"The remaining number of origins: {number_of_origins}")
-        print(f"The remaining number of destinations: {number_of_destinations}")
+        logging.info(f"The remaining number of origins: {number_of_origins}")
+        logging.info(f"The remaining number of destinations: {number_of_destinations}")
         total_remain = remain_od["Car21"].sum()
         if total_remain == 0:
-            print("Iteration stops: there is no remaining flows!")
+            logging.info("Iteration stops: there is no remaining flows!")
             break
 
         # %%
@@ -868,14 +868,14 @@ def network_flow_model(
         total_cost += cost_fuel + cost_time + cost_toll
 
         total_remain = remain_od["Car21"].sum()
-        print(f"The total remain flow (after adjustment) is: {total_remain}.")
+        logging.info(f"The total remain flow (after adjustment) is: {total_remain}.")
 
         # %%
         # update the percentage of flow -> this should go below based on allocated od
         assigned_sumod += temp_flow_matrix["flow"].sum()
         percentage_sumod = assigned_sumod / initial_sumod
         if r > 1 and percentage_sumod > 0.9:
-            print(
+            logging.info(
                 f"Stop: {percentage_sumod*100}% of flows have been allocated and "
                 "there is no edge overflow!"
             )
@@ -892,10 +892,10 @@ def network_flow_model(
     road_links.acc_capacity = road_links.acc_capacity.astype(int)
     road_links = road_links.iloc[:, 0:38]  # drop mid-columns
 
-    print("The flow simulation is completed!")
-    print(f"total travel cost is (£): {total_cost}")
-    print(f"total time-equiv cost is (£): {cost_time}")
-    print(f"total operating cost is (£): {cost_fuel}")
-    print(f"total toll cost is (£): {cost_toll}")
+    logging.info("The flow simulation is completed!")
+    logging.info(f"total travel cost is (£): {total_cost}")
+    logging.info(f"total time-equiv cost is (£): {cost_time}")
+    logging.info(f"total operating cost is (£): {cost_fuel}")
+    logging.info(f"total toll cost is (£): {cost_toll}")
 
     return road_links, isolation, odpfc
