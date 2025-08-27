@@ -658,9 +658,10 @@ def itter_path(
         time = toll = fuel = 0.0
         for edge_idx in path:
             edge_flow_dict[edge_idx] += flow
-            fuel += network.es[edge_idx]["operating_cost"]
-            time += network.es[edge_idx]["time_cost"]
-            toll += network.es[edge_idx]["average_toll_cost"]
+            edge = network.es[edge_idx]
+            fuel += edge["operating_cost"]
+            time += edge["time_cost"]
+            toll += edge["average_toll_cost"]
         fuels.append(fuel)
         times.append(time)
         tolls.append(toll)
