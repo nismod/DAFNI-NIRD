@@ -17,7 +17,7 @@ warnings.simplefilter("ignore")
 base_path = Path("/data/DAFNI_NIRD/data/processed_data")
 
 
-def main(num_of_cpu):
+def main(num_of_cpu, sample_stride=1):
     """
     Main function to validate the network flow model.
 
@@ -39,6 +39,8 @@ def main(num_of_cpu):
 
     Parameters:
         num_of_cpu (int): Number of CPUs to use for parallel processing.
+        sample_stride (int): Stride length to use on OD. Defaults to using
+            entire matrix.
 
     Returns:
         None: Outputs are saved to files.
@@ -68,15 +70,13 @@ def main(num_of_cpu):
     )
     od_node_2021["Car21"] = od_node_2021["Car21"] * 2
     # od_node_2021 = od_node_2021.head(100)  # debug
+
+    if sample_stride > 1:
+        logging.info(f"For testing, sampling every {sample_stride} flows")
+        od_node_2021 = od_node_2021.iloc[::sample_stride]
+
     logging.info(f"\n{od_node_2021}")
     logging.info(f"Total flows: {od_node_2021.Car21.sum()}")
-
-    sample = 1000
-    if sample:
-        logging.info(f"For testing, sampling every {sample} flows")
-        od_node_2021 = od_node_2021.iloc[::sample]
-        logging.info(f"\n{od_node_2021}")
-        logging.info(f"Total flows: {od_node_2021.Car21.sum()}")
 
     # initialise road links
     logging.info("Generate road links")
@@ -147,13 +147,14 @@ if __name__ == "__main__":
 
     Command-line Arguments:
         num_of_cpu (int): Number of CPUs to use for parallel processing.
+        sample_stride (int): Stride length to use on OD.
 
     Returns:
         None: Prints a message if the required argument is missing.
     """
     logging.basicConfig(format="%(asctime)s %(process)d %(filename)s %(message)s", level=logging.INFO)
     try:
-        num_of_cpu = int(sys.argv[1])
-        main(num_of_cpu)
+        num_of_cpu, sample_stride = sys.argv[1:]
+        main(int(num_of_cpu), int(sample_stride))
     except IndexError or NameError:
         print("Please enter the required number of CPUs!")
