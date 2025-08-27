@@ -729,7 +729,6 @@ def network_flow_model(
         shared_network_pkl = pickle.dumps(network)
 
         # find the least-cost path for each OD trip
-        list_of_spath = []
         args = []
         logging.info("Creating argument list")
         remain_od = remain_od.set_index("origin_node")
@@ -747,13 +746,17 @@ def network_flow_model(
 
         # batch-processing
         st = time.time()
+        list_of_spath = []
         if num_of_cpu > 1:
             with Pool(
                 processes=num_of_cpu,
                 initializer=worker_init_path,
                 initargs=(shared_network_pkl,),
             ) as pool:
-                list_of_spath = pool.map(find_least_cost_path, args)
+                for i, shortest_path in enumerate(pool.imap_unordered(find_least_cost_path, args)):
+                    list_of_spath.append(shortest_path)
+                    if i % 10_000 == 0:
+                        logging.info(f"Completed {i} of {len(args)}, {100 * i / len(args):.2f}%")
         else:
             global shared_network
             shared_network = network
