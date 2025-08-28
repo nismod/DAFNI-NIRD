@@ -738,7 +738,13 @@ def network_flow_model(
             # Use an index to select elements -- faster than creating a mask
             subset = remain_od.loc[origin_node, ["destination_node", "Car21"]]
             if isinstance(subset, pd.DataFrame):  # Multiple destination nodes
-                args.append((origin_node, subset.destination_node.tolist(), subset.Car21.tolist()))
+                args.append(
+                    (
+                        origin_node,
+                        subset.destination_node.tolist(),
+                        subset.Car21.tolist(),
+                    )
+                )
             elif isinstance(subset, pd.Series):  # Single destination node
                 args.append((origin_node, [subset.destination_node], [subset.Car21]))
             else:
@@ -754,10 +760,14 @@ def network_flow_model(
                 initializer=worker_init_path,
                 initargs=(shared_network_pkl,),
             ) as pool:
-                for i, shortest_path in enumerate(pool.imap_unordered(find_least_cost_path, args)):
+                for i, shortest_path in enumerate(
+                    pool.imap_unordered(find_least_cost_path, args)
+                ):
                     list_of_spath.append(shortest_path)
                     if i % 10_000 == 0:
-                        logging.info(f"Completed {i} of {len(args)}, {100 * i / len(args):.2f}%")
+                        logging.info(
+                            f"Completed {i} of {len(args)}, {100 * i / len(args):.2f}%"
+                        )
         else:
             global shared_network
             shared_network = network

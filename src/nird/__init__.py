@@ -1,2 +1,1 @@
-"""NIRD - National Infrastructure Resilience Demonstrator
-"""
+"""NIRD - National Infrastructure Resilience Demonstrator"""

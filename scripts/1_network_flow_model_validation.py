@@ -64,9 +64,7 @@ def main(num_of_cpu, sample_stride=1):
     )
     # od matrix (2021) -> updated to od with bridges
     od_node_2021 = pd.read_csv(
-        base_path
-        / "census_datasets"
-        / "od_gb_oa_2021_node_with_bridges.csv"
+        base_path / "census_datasets" / "od_gb_oa_2021_node_with_bridges.csv"
     )
     od_node_2021["Car21"] = od_node_2021["Car21"] * 2
     # od_node_2021 = od_node_2021.head(100)  # debug
@@ -152,7 +150,9 @@ if __name__ == "__main__":
     Returns:
         None: Prints a message if the required argument is missing.
     """
-    logging.basicConfig(format="%(asctime)s %(process)d %(filename)s %(message)s", level=logging.INFO)
+    logging.basicConfig(
+        format="%(asctime)s %(process)d %(filename)s %(message)s", level=logging.INFO
+    )
     try:
         num_of_cpu, sample_stride = sys.argv[1:]
         main(int(num_of_cpu), int(sample_stride))
