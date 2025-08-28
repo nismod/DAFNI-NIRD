@@ -14,7 +14,7 @@ import json
 import warnings
 
 warnings.simplefilter("ignore")
-base_path = Path("/data/DAFNI_NIRD/data/processed_data")
+base_path = Path(load_config()["paths"]["base_path"])
 
 
 def main(num_of_cpu, sample_stride=1):
