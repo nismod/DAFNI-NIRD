@@ -1,5 +1,4 @@
-""" Road Network Flow Model - Functions
-"""
+"""Road Network Flow Model - Functions"""
 
 from typing import Tuple, List, Dict
 from collections import defaultdict
