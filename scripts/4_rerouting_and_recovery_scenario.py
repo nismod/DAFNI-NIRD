@@ -1,0 +1,318 @@
+# %%
+import sys
+import json
+import warnings
+from functools import partial
+from pathlib import Path
+from typing import Dict, List, Tuple
+
+import geopandas as gpd
+import numpy as np
+import pandas as pd
+from tqdm import tqdm
+from collections import defaultdict
+
+import road_revised as func
+from utils import load_config, get_flow_on_edges
+
+warnings.simplefilter("ignore")
+base_path = Path(load_config()["paths"]["soge_clusters"])
+tqdm.pandas()
+
+
+# %%
+def have_common_items(list1: List, list2: List) -> bool:
+    common_items = set(list1) & set(list2)
+    return common_items
+
+
+def bridge_recovery(
+    day: int,
+    damage_level: str,
+    designed_capacity: float,
+    current_capacity: float,
+    bridge_recovery_dict: Dict,
+    event_day: bool,
+) -> Tuple[float, float]:
+    if event_day:
+        if damage_level in ["extensive", "severe"]:
+            current_capacity = 0
+    else:
+        if damage_level != "no":
+            recovery_rate = bridge_recovery_dict.get(damage_level, [])[day]
+            current_capacity = max(designed_capacity * recovery_rate, current_capacity)
+    return current_capacity
+
+
+def ordinary_road_recovery(
+    day: int,
+    damage_level: str,
+    designed_capacity: float,
+    current_capacity: float,
+    road_recovery_dict: Dict,
+    event_day: bool,
+) -> Tuple[float, float]:
+    if event_day:  # the occurance of damage
+        if damage_level in ["extensive", "severe"]:
+            current_capacity = 0
+    else:
+        if damage_level != "no":
+            recovery_rate = road_recovery_dict.get(damage_level, [])[day]
+            current_capacity = max(designed_capacity * recovery_rate, current_capacity)
+
+    return current_capacity
+
+
+def load_scenarios(base_path: Path) -> Tuple[Dict, Dict]:
+    """Load recovery rates for bridges and ordinary roads."""
+    df = pd.read_excel(
+        base_path / "tables" / "recovery design_updated.xlsx",
+        sheet_name="unique_groups",
+    )
+
+    bridge_recovery_dict = defaultdict(list)
+    road_recovery_dict = defaultdict(list)
+    scenarios = []
+    conditions = []
+    for _, row in df.iterrows():
+        bridge_recovery_dict["minor"].append(row["bridge_minor"])
+        bridge_recovery_dict["moderate"].append(row["bridge_moderate"])
+        bridge_recovery_dict["extensive"].append(row["bridge_extensive"])
+        bridge_recovery_dict["severe"].append(row["bridge_severe"])
+        road_recovery_dict["minor"].append(row["road_minor"])
+        road_recovery_dict["moderate"].append(row["road_moderate"])
+        road_recovery_dict["extensive"].append(row["road_extensive"])
+        road_recovery_dict["severe"].append(row["road_severe"])
+        scenarios.append(int(row["scenario"]))
+        conditions.append(int(row["event_day"]))
+
+    return (bridge_recovery_dict, road_recovery_dict, scenarios, conditions)
+
+
+def main(
+    depth_thres,
+    number_of_cpu,
+    flood_key,
+    scenario_idx,
+):
+    # Load recovery scenarios
+    (
+        bridge_recovery_dict,
+        road_recovery_dict,
+        scenarios,  # list of scenarios
+        conditions,  # condition == 1: day 0, otherwise: day > 0
+    ) = load_scenarios(base_path)
+
+    # Load network parameters
+    with open(base_path / "parameters" / "flow_breakpoint_dict.json", "r") as f:
+        flow_breakpoint_dict = json.load(f)
+
+    # Load road links
+    road_links = gpd.read_parquet(
+        base_path.parent
+        / "results"
+        / "disruption_analysis"
+        / str(depth_thres)
+        / "links"
+        / f"road_links_{flood_key}.gpq"  # Thames Lloyd's RDS
+    )
+    road_links["breakpoint_flows"] = road_links["combined_label"].map(
+        flow_breakpoint_dict
+    )
+    road_links["designed_capacity"] = road_links["current_capacity"]
+
+    # Load OD path file
+    od_path_file = pd.read_parquet(
+        base_path.parent / "results" / "base_scenario" / "odpfc_validation_0221.pq",
+        engine="fastparquet",
+    )
+
+    # Identify disrupted links
+    disrupted_links = (
+        road_links.loc[
+            (road_links.max_speed < road_links.current_speed)
+            | (road_links.damage_level_max == "extensive")
+            | (road_links.damage_level_max == "severe"),
+            "e_id",
+        ]
+        .unique()
+        .tolist()
+    )
+    partial_have_common_items = partial(have_common_items, list2=disrupted_links)
+    od_path_file["disrupted_links"] = np.vectorize(partial_have_common_items)(
+        od_path_file.path
+    )
+    od_path_file["disrupted_links"] = od_path_file["disrupted_links"].apply(list)
+
+    # Recovery analysis loop
+    cDict = {}
+    # revise this to batch-process...
+    # for scenario_idx in range(len(scenarios)):  # 13 scenarios
+    print(f"Rerouting Analysis on Scenario-{scenario_idx}...")
+    event_day = conditions[scenario_idx] == 1
+    # update edge capacities
+    print("Updating edge capacities...")
+    road_links["current_capacity"] = road_links.progress_apply(
+        lambda row: (
+            bridge_recovery(
+                scenario_idx,
+                row["damage_level_max"],
+                row["designed_capacity"],
+                row["current_capacity"],
+                bridge_recovery_dict,
+                event_day,
+            )
+            if row["road_label"] == "bridge"
+            else (
+                ordinary_road_recovery(
+                    scenario_idx,
+                    row["damage_level_max"],
+                    row["designed_capacity"],
+                    row["current_capacity"],
+                    road_recovery_dict,
+                    event_day,
+                )
+            )
+        ),
+        axis=1,
+    )
+
+    # Update the disrupted OD paths
+    current_capacity_dict = road_links.set_index("e_id")["current_capacity"].to_dict()
+    od_path_file["capacities_of_disrupted_links"] = od_path_file[
+        "disrupted_links"
+    ].apply(lambda x: [current_capacity_dict.get(xi, 0) for xi in x])
+
+    od_path_file["min_capacities_of_disrupted_links"] = od_path_file[
+        "capacities_of_disrupted_links"
+    ].apply(lambda x: min(x) if len(x) > 0 else np.nan)
+
+    disrupted_od = od_path_file.loc[
+        od_path_file["min_capacities_of_disrupted_links"].notnull()
+    ]
+    disrupted_od["flow"] = np.maximum(
+        0,
+        disrupted_od["flow"] - disrupted_od["min_capacities_of_disrupted_links"],
+    )
+
+    # Adjust road flows
+    road_links["disrupted_flow"] = 0.0
+    disrupted_edge_flow = get_flow_on_edges(disrupted_od, "e_id", "path", "flow")
+    disrupted_edge_flow.rename(columns={"flow": "disrupted_flow"}, inplace=True)
+
+    road_links = road_links.set_index("e_id")
+    road_links.update(disrupted_edge_flow.set_index("e_id")["disrupted_flow"])
+    road_links = road_links.reset_index()
+
+    road_links["acc_capacity"] = road_links["current_capacity"] + np.where(
+        road_links["damage_level_max"].isin(["extensive", "severe"]),
+        0,
+        road_links["disrupted_flow"],
+    )
+
+    # Update edge speeds
+    print("Updating edge speeds...")
+    road_links["acc_speed"] = road_links.apply(
+        lambda x: func.update_edge_speed(
+            x["combined_label"],  # constant
+            x["current_flow"],  # variable
+            x["initial_flow_speeds"],  # constant
+            x["min_flow_speeds"],  # constant
+            x["breakpoint_flows"],  # constant
+        ),
+        axis=1,
+    )
+    if event_day:  # the occurance of damage
+        road_links["acc_speed"] = road_links[["current_speed", "max_speed"]].min(axis=1)
+
+    # initial key variables
+    road_links["acc_flow"] = 0
+    disrupted_od.rename(columns={"flow": "Car21"}, inplace=True)
+    # disrupted_od = disrupted_od.head(100)  #!!! debug
+
+    # create network (time-consuming when updating network edge index)
+    print("Creating igraph network...")
+    valid_road_links = road_links[
+        (road_links["acc_capacity"] > 0) & (road_links["acc_speed"] > 0)
+    ].reset_index(drop=True)
+    network, valid_road_links = func.create_igraph_network(valid_road_links)
+
+    # run flow rerouting analysis
+    print("Running flow simulation...")
+    valid_road_links, isolation, _, cList = func.network_flow_model(
+        valid_road_links,
+        network,
+        disrupted_od[["origin_node", "destination_node", "Car21"]],
+        flow_breakpoint_dict,
+        num_of_cpu=number_of_cpu,
+    )
+    cDict[scenario_idx] = cList
+    road_links = road_links.set_index("e_id")
+    road_links.update(valid_road_links.set_index("e_id")["acc_flow"])
+    road_links = road_links.reset_index()
+
+    isolation_df = pd.DataFrame(
+        isolation,
+        columns=[
+            "origin_node",
+            "destination_node",
+            "Car21",
+        ],
+    )
+
+    out_path = (
+        base_path.parent
+        / "results"
+        / "rerouting_analysis"
+        / "scenarios"
+        / str(depth_thres)  # e.g.,30
+        / str(flood_key)  # e.g.,17
+    )
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    print("Saving results to disk...")
+    isolation_df.to_csv(
+        out_path / f"trip_isolations_{scenario_idx}.csv",
+        index=False,
+    )
+    road_links.to_parquet(out_path / f"edge_flows_{scenario_idx}.gpq")
+
+    cost_df = pd.DataFrame.from_dict(
+        cDict, orient="index", columns=["time", "fuel", "toll", "total"]
+    ).reset_index()
+    cost_df.rename(columns={"index": "scenario"}, inplace=True)
+    cost_df.to_csv(out_path / f"cost_matrix_{scenario_idx}.csv", index=False)
+
+    del isolation
+    del valid_road_links
+
+
+if __name__ == "__main__":
+    try:
+        depth_thres = int(sys.argv[1])
+    except (IndexError, ValueError):
+        print(
+            "Error: Please provide the flood depth for road closure "
+            "(e.g., 15, 30 or 60 cm) as the first argument!"
+        )
+        sys.exit(1)
+
+    try:
+        number_of_cpu = int(sys.argv[2])
+    except (IndexError, ValueError):
+        print("Error: Please provide the number of CPUs as the second argument!")
+        sys.exit(1)
+
+    try:
+        flood_key = int(sys.argv[3])
+    except (IndexError, ValueError):
+        print("Error: Please provide the flood key!")
+        sys.exit(1)
+
+    try:
+        scenario_idx = int(sys.argv[4])  # 0-12
+    except (IndexError, ValueError):
+        print("Error: Please provide the scenario index (0-12) as the fourth argument!")
+        sys.exit(1)
+
+    main(depth_thres, number_of_cpu, flood_key, scenario_idx)
