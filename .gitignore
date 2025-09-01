@@ -109,11 +109,10 @@ cython_debug/
 .vscode
 
 # Local-only files
-code_copies
-scripts/scikit-mobility
-scripts/snkit
 *.tar
 *.tar.gz
 test_inputs
 test_outputs
-local_copy
+*.sh
+*.out
+_plottings_*
