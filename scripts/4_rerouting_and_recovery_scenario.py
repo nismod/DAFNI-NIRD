@@ -5,6 +5,7 @@ import warnings
 from functools import partial
 from pathlib import Path
 from typing import Dict, List, Tuple
+import logging
 
 import geopandas as gpd
 import numpy as np
@@ -12,8 +13,8 @@ import pandas as pd
 from tqdm import tqdm
 from collections import defaultdict
 
-import road_revised as func
-from utils import load_config, get_flow_on_edges
+import nird.road_revised as func
+from nird.utils import load_config, get_flow_on_edges
 
 warnings.simplefilter("ignore")
 base_path = Path(load_config()["paths"]["soge_clusters"])
@@ -315,4 +316,7 @@ if __name__ == "__main__":
         print("Error: Please provide the scenario index (0-12) as the fourth argument!")
         sys.exit(1)
 
+    logging.basicConfig(
+        format="%(asctime)s %(process)d %(filename)s %(message)s", level=logging.INFO
+    )
     main(depth_thres, number_of_cpu, flood_key, scenario_idx)
