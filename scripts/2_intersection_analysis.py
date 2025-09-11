@@ -3,6 +3,7 @@ from typing import Dict
 from pathlib import Path
 
 import geopandas as gpd
+import numpy as np
 from collections import defaultdict
 
 from snail import io, intersection
@@ -48,15 +49,15 @@ def intersect_features_with_raster(
     # run the intersection analysis
     grid, _ = io.read_raster_metadata(raster_path)
     prepared = intersection.prepare_linestrings(features)
+    if prepared.crs != grid.crs:
+        print("Projecting Feature (clipped) CRS to Grid CRS...")
+        prepared = prepared.to_crs(grid.crs)
+
     intersections = intersection.split_linestrings(prepared, grid)
-    # if intersections is None:
-    #     print("Intersection Error: Linestring_features is empty!")
-    #     sys.exit()
     intersections = intersection.apply_indices(intersections, grid)
     intersections[f"flood_depth_{flood_type}"] = (
         intersection.get_raster_values_for_splits(intersections, raster)
     )
-
     # reproject back
     intersections = intersections.to_crs("epsg:27700")
     intersections["length"] = intersections.geometry.length
@@ -88,11 +89,10 @@ def clip_features(
 
     print(f"Clipping features based on {raster_key}...")
     clips = gpd.read_file(clip_path, engine="pyogrio")
-    if clips.crs != "epsg:4326":
-        clips = clips.to_crs("epsg:4326")
-    assert (
-        clips.crs == features.crs
-    ), "CRS mismatch! Ensure both layers use the same CRS."
+    if features.crs != clips.crs:
+        print("Projecting Feature CRS to match GRID CRS...")
+        features = features.to_crs(clips.crs)
+
     clipped_features = gpd.sjoin(features, clips, how="inner", predicate="intersects")
     clipped_features = clipped_features[features.columns]
     clipped_features.reset_index(drop=True, inplace=True)
@@ -165,7 +165,7 @@ def compute_damage_level_on_flooded_roads(
         - "severe": Severe damage
     """
 
-    depth = fldDepth * 100  # cm
+    depth = fldDepth * 100  # convert from m to cm
     if fldType == "surface":
         if road_label == "tunnel" and (
             road_classification == "Motorway"
@@ -179,8 +179,10 @@ def compute_damage_level_on_flooded_roads(
                 return "moderate"
             elif 200 <= depth < 600:
                 return "extensive"
-            else:
+            elif depth >= 600:
                 return "severe"
+            else:
+                return np.nan
         elif road_label != "tunnel" and (
             road_classification == "Motorway"
             or (road_classification == "A Road" and trunk_road)
@@ -193,8 +195,10 @@ def compute_damage_level_on_flooded_roads(
                 return "no"
             elif 200 <= depth < 600:
                 return "minor"
-            else:
+            elif depth >= 600:
                 return "moderate"
+            else:
+                return np.nan
         else:
             if depth < 50:
                 return "no"
@@ -204,8 +208,10 @@ def compute_damage_level_on_flooded_roads(
                 return "minor"
             elif 200 <= depth < 600:
                 return "minor"
-            else:
+            elif depth >= 600:
                 return "moderate"
+            else:
+                return np.nan
 
     elif fldType == "river":
         if road_label == "tunnel" and (
@@ -220,8 +226,10 @@ def compute_damage_level_on_flooded_roads(
                 return "minor"
             elif 200 <= depth < 600:
                 return "moderate"
-            else:
+            elif depth >= 600:
                 return "extensive"
+            else:
+                return np.nan
         elif road_label != "tunnel" and (
             road_classification == "Motorway"
             or (road_classification == "A Road" and trunk_road)
@@ -234,8 +242,10 @@ def compute_damage_level_on_flooded_roads(
                 return "moderate"
             elif 200 <= depth < 600:
                 return "extensive"
-            else:
+            elif depth >= 600:
                 return "severe"
+            else:
+                return np.nan
         else:
             if depth < 50:
                 return "minor"
@@ -245,8 +255,10 @@ def compute_damage_level_on_flooded_roads(
                 return "moderate"
             elif 200 <= depth < 600:
                 return "extensive"
-            else:
+            elif depth >= 600:
                 return "severe"
+            else:
+                return np.nan
     else:
         print("Please enter the type of flood!")
 
@@ -281,7 +293,7 @@ def intersections_with_damage(
     """
 
     # Clip road links with features in the provided vector file
-    road_links = road_links.to_crs("epsg:4326")
+    # road_links = road_links.to_crs("epsg:4326")
     clipped_features = clip_features(road_links, clip_path, flood_key)
     if clipped_features.empty:
         print("Warning: Clip features is None!")
@@ -452,7 +464,10 @@ def main(depth_thres):
     """
     # base scenario simulation results
     base_scenario_links = gpd.read_parquet(
-        base_path.parent / "results" / "base_scenario" / "edge_flows_32p.gpq"
+        base_path.parent
+        / "results"
+        / "base_scenario"
+        / "edge_flows_validation_0221.gpq"  # "edge_flows_32p.gpq"
     )
     base_scenario_links.rename(
         columns={
@@ -513,10 +528,13 @@ def main(depth_thres):
         road_links = gpd.read_parquet(
             base_path / "networks" / "GB_road_links_with_bridges.gpq"
         )
-
         # out path
         out_path = (
-            base_path.parent / "results" / "disruption_analysis" / str(depth_thres)
+            base_path.parent
+            / "results"
+            / "disruption_analysis"
+            / "revision"
+            / str(depth_thres)
         )
 
         intersections = gpd.GeoDataFrame(
@@ -567,6 +585,8 @@ def main(depth_thres):
             print("Warning: intersections result is empty!")
             # breakpoint()
             continue
+
+        (out_path / "intersections").mkdir(parents=True, exist_ok=True)
         intersections.to_parquet(
             out_path / "intersections" / f"intersections_{flood_key}.pq"
         )
@@ -610,6 +630,8 @@ def main(depth_thres):
             ),
             axis=1,
         )
+
+        (out_path / "links").mkdir(parents=True, exist_ok=True)
         road_links.to_parquet(out_path / "links" / f"road_links_{flood_key}.gpq")
 
 
