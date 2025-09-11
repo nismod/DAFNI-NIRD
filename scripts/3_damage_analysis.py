@@ -506,6 +506,7 @@ def main(depth_thres):
         base_path.parent
         / "results"
         / "disruption_analysis"
+        / "revision"
         / "30"  # str(depth_thres)
         / "intersections"
     ):
@@ -519,8 +520,8 @@ def main(depth_thres):
             base_path.parent
             / "results"
             / "damage_analysis"
-            # / str(depth_thres)
-            / f"{flood_key}_with_damage_values.csv"
+            / "revision"
+            # / f"{flood_key}_with_damage_values.csv"
         )
 
         print(f"Calculate damages for {flood_key}...")
@@ -546,16 +547,16 @@ def main(depth_thres):
         )
 
         # export results
-        intersections_with_damage.to_csv(out_path, index=False)
+        (out_path).mkdir(parents=True, exist_ok=True)
+        intersections_with_damage.to_csv(
+            out_path / f"{flood_key}_with_damage_values.csv", index=False
+        )
 
 
 if __name__ == "__main__":
     try:
         depth_thres = int(sys.argv[1])
     except (IndexError, ValueError):
-        print(
-            "Error: Please provide the flood depth for road closure (e.g., 30 or "
-            "60 cm)!"
-        )
+        print("Error: Please provide the flood depth for road closure: 15,30,60 cm")
         sys.exit(1)
     main(depth_thres)
