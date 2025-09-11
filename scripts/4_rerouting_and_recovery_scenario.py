@@ -178,30 +178,32 @@ def main(
 
     # Update the disrupted OD paths
     current_capacity_dict = road_links.set_index("e_id")["current_capacity"].to_dict()
-    od_path_file["capacities_of_disrupted_links"] = od_path_file[
-        "disrupted_links"
-    ].apply(lambda x: [current_capacity_dict.get(xi, 0) for xi in x])
+    disrupted_od = od_path_file[
+        od_path_file["disrupted_links"].apply(lambda x: len(x)) > 0
+    ].reset_index(drop=True)
 
-    od_path_file["min_capacities_of_disrupted_links"] = od_path_file[
-        "capacities_of_disrupted_links"
-    ].apply(lambda x: min(x) if len(x) > 0 else np.nan)
-
-    disrupted_od = od_path_file.loc[
-        od_path_file["min_capacities_of_disrupted_links"].notnull()
-    ]
-    # some flows could be still send to the original path
-    # with the rest flows disrupted
+    disrupted_od = disrupted_od.explode("disrupted_links")
+    disrupted_od["capacities_of_disrupted_links"] = disrupted_od.disrupted_links.map(
+        current_capacity_dict
+    )
+    disrupted_od = disrupted_od.groupby(
+        by=["origin_node", "destination_node"], as_index=False
+    ).agg(
+        {
+            "path": "first",
+            "flow": "first",
+            "capacities_of_disrupted_links": "min",
+        }
+    )
     disrupted_od["disrupted_flow"] = np.maximum(
         0,
-        disrupted_od["flow"] - disrupted_od["min_capacities_of_disrupted_links"],
+        disrupted_od["flow"] - disrupted_od["capacities_of_disrupted_links"],
     )  # disrupted_od_flows
 
     # Restore capacity for non-disrupted roads
     disrupted_edge_flow = get_flow_on_edges(
         disrupted_od, "e_id", "path", "disrupted_flow"
     )  # redistribute those od back to road links
-
-    # disrupted_edge_flow.rename(columns={"flow": "disrupted_flow"}, inplace=True)
     road_links["disrupted_flow"] = 0.0
     road_links = road_links.set_index("e_id")
     road_links.update(disrupted_edge_flow.set_index("e_id")["disrupted_flow"])
