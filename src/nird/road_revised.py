@@ -649,10 +649,13 @@ def worker_init_path(
 def itter_path(
     network,
     temp_flow_matrix: pd.DataFrame,
+    chunk_size: int = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Iterate through all the paths to calculate edge flows and travel costs."""
+    if chunk_size is None:
+        chunk_size = len(temp_flow_matrix)  # default = process all at once
 
-    exploded = temp_flow_matrix.explode("path")
+    # exploded = temp_flow_matrix.explode("path")
     edges_df = pd.DataFrame(
         {
             "path": range(len(network.es)),  # edge IDs (same as in exploded["path"])
@@ -661,30 +664,45 @@ def itter_path(
             "average_toll_cost": network.es["average_toll_cost"],
         }
     ).set_index("path")
-    edges_df.index.name = "path"
-    exploded = exploded.join(edges_df, on="path").rename(
-        columns={
-            "time_cost": "time_cost_per_flow",
-            "operating_cost": "operating_cost_per_flow",
-            "average_toll_cost": "toll_cost_per_flow",
-        }
-    )
-    temp_flow_matrix = exploded.groupby(
-        by=["origin", "destination"], as_index=False
-    ).agg(
-        {
-            "path": list,
-            "flow": "first",
-            "operating_cost_per_flow": "sum",
-            "time_cost_per_flow": "sum",
-            "toll_cost_per_flow": "sum",
-        }
-    )
+
+    edge_flows = []
+    od_results = []
+    for start in range(0, len(temp_flow_matrix), chunk_size):
+        chunk = temp_flow_matrix.iloc[start : start + chunk_size].explode("path")
+        chunk = chunk.join(edges_df, on="path").rename(
+            columns={
+                "time_cost": "time_cost_per_flow",
+                "operating_cost": "operating_cost_per_flow",
+                "average_toll_cost": "toll_cost_per_flow",
+            }
+        )
+        # aggregate OD results
+        od_results.append(
+            chunk.groupby(["origin", "destination"], as_index=False).agg(
+                {
+                    "path": list,
+                    "flow": "first",
+                    "operating_cost_per_flow": "sum",
+                    "time_cost_per_flow": "sum",
+                    "toll_cost_per_flow": "sum",
+                }
+            )
+        )
+
+        # edge flows
+        edge_flows.append(
+            chunk.groupby("path")["flow"]
+            .sum()
+            .reset_index()
+            .rename(columns={"path": "e_idx"})
+        )
+
+    temp_flow_matrix = pd.concat(od_results, ignore_index=True)
     temp_edge_flow = (
-        exploded.groupby("path")["flow"]
+        pd.concat(edge_flows, ignore_index=True)
+        .groupby("e_idx")["flow"]
         .sum()
         .reset_index()
-        .rename(columns={"path": "e_idx"})
     )
 
     return (temp_edge_flow, temp_flow_matrix)
@@ -891,10 +909,17 @@ def network_flow_model(
         # %%
         # calculate edge flows -> [e_idx, flow]
         # and attach cost matrix (fuel, time, toll) to temp_flow_matrix
+        logging.info("Calculating edge flows...")
+        logging.info(f"Size of temp_flow_matrix is: {len(temp_flow_matrix)}")
+        number_of_chunks = 100  # ???
         (
             temp_edge_flow,
             temp_flow_matrix,
-        ) = itter_path(network, temp_flow_matrix)
+        ) = itter_path(
+            network,
+            temp_flow_matrix,
+            chunk_size=int(len(temp_flow_matrix)) // number_of_chunks,
+        )
         # should first check overflows
         # compare the remaining capacity and to-be-allocated flows
         temp_edge_flow = temp_edge_flow.merge(
