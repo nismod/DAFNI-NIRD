@@ -849,7 +849,6 @@ def network_flow_model(
 
         # find the least-cost path for each OD trip
         args = []
-        # logging.info("Creating argument list")
         remain_od = remain_od.set_index("origin_node")
         list_of_origin_nodes = remain_od.index.unique()
         for origin_node in tqdm(list_of_origin_nodes, desc="Creating argument list: "):
@@ -985,6 +984,11 @@ def network_flow_model(
         remain_od["Car21"] = remain_od["Car21"] - remain_od["flow"]
         remain_od.loc[remain_od["Car21"] < 0.5, "Car21"] = 0.0
         remain_od.drop(columns=temp_flow_matrix.columns.tolist(), inplace=True)
+        remain_od.dropna(subset=["Car21"], inplace=True)  # drop nan records
+        remain_od["Car21"] = remain_od["Car21"].round(0).astype(int)
+        logging.info(
+            f"The total remain flow (after adjustment) is: {remain_od["Car21"].sum()}."
+        )
         # %%
         # update road edge attributes (flow, capacity, speed)
         temp_edge_flow["flow"] *= min(r, 1.0)
@@ -1021,14 +1025,8 @@ def network_flow_model(
             temp_flow_matrix["flow"] * temp_flow_matrix["toll_cost_per_flow"]
         ).sum()
         total_cost = cost_fuel + cost_time + cost_toll
-
         # %%
         # check point for next iteration
-        remain_od["Car21"] = remain_od["Car21"].round(0).astype(int)
-        # total_remain = remain_od["Car21"].sum()
-        logging.info(
-            f"The total remain flow (after adjustment) is: {remain_od["Car21"].sum()}."
-        )
         if r >= 1:
             assigned_sumod += temp_flow_matrix["flow"].sum()
             percentage_sumod = assigned_sumod / initial_sumod
