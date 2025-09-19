@@ -376,21 +376,21 @@ def update_edge_speed(
     combined_label: str
         The type or road links.
     total_flow: float
-        The number of vehicles on road links.
+        The number of vehicles on road links (passneger-cars).
     initial_flow_speed: float
-        The initial traffic speeds of road links.
+        The initial traffic speeds of road links (mph).
     min_flow_speed: float
-        The minimum traffic speeds of road links.
+        The minimum traffic speeds of road links (mph).
     breakpoint_flow: float
-        The breakpoint flow after which speed start to decrease.
+        The breakpoint flow after which speed start to decrease. (passenger-cars/hour/lane)
 
     Returns
     -------
     speed: float
-        The "real-time" traffic speeds on road links.
+        The "real-time" traffic speeds on road links. (mph)
     """
 
-    vp = total_flow / 24
+    vp = total_flow / 24  # trips/hour
     if combined_label == "M" and vp > breakpoint_flow:
         speed = initial_flow_speed - 0.033 * (vp - breakpoint_flow)
     elif combined_label == "A_single" and vp > breakpoint_flow:
@@ -448,7 +448,6 @@ def create_igraph_network(
     if len(road_links[road_links.e_idx.isnull()]) > 0:
         logging.info("Error: cannot find e_id in the network!")
         sys.exit()
-    # road_links = road_links[cols + ["e_idx"]]
 
     return network, road_links
 
@@ -654,20 +653,24 @@ def itter_path(
     """Iterate through all the paths to calculate edge flows and travel costs."""
     if chunk_size is None:
         chunk_size = len(temp_flow_matrix)  # default = process all at once
-
-    # exploded = temp_flow_matrix.explode("path")
+    edges = network.es
     edges_df = pd.DataFrame(
         {
-            "path": range(len(network.es)),  # edge IDs (same as in exploded["path"])
-            "time_cost": network.es["time_cost"],
-            "operating_cost": network.es["operating_cost"],
-            "average_toll_cost": network.es["average_toll_cost"],
+            "path": range(len(edges)),  # edges["e_idx"]
+            "edge_id": edges["e_id"],
+            "time_cost": edges["time_cost"],
+            "operating_cost": edges["operating_cost"],
+            "average_toll_cost": edges["average_toll_cost"],
         }
     ).set_index("path")
 
     edge_flows = []
     od_results = []
-    for start in range(0, len(temp_flow_matrix), chunk_size):
+    for start in tqdm(
+        range(0, len(temp_flow_matrix), chunk_size),
+        desc="Processing chunks:",
+        unit="chunk",
+    ):
         chunk = temp_flow_matrix.iloc[start : start + chunk_size].explode("path")
         chunk = chunk.join(edges_df, on="path").rename(
             columns={
@@ -681,6 +684,7 @@ def itter_path(
             chunk.groupby(["origin", "destination"], as_index=False).agg(
                 {
                     "path": list,
+                    "edge_id": list,
                     "flow": "first",
                     "operating_cost_per_flow": "sum",
                     "time_cost_per_flow": "sum",
@@ -714,9 +718,14 @@ def isolate_low_saturation_trips(
     temp_edge_flow,
     r,
     threshold=0.5,
+    chunk_size: int = None,
 ):
     # ensure r does not fall below threshold
     r = max(r, threshold)
+
+    # default = process all at once
+    if chunk_size is None:
+        chunk_size = len(temp_flow_matrix)
 
     # safe division for saturation
     saturation_ratio = temp_edge_flow["acc_capacity"] / temp_edge_flow["flow"].replace(
@@ -739,9 +748,22 @@ def isolate_low_saturation_trips(
         print("Error: no 'path' column in temp_flow_matrix for exploded!")
         sys.exit()
 
-    exploded = temp_flow_matrix.explode("path")
-    exploded["is_low_saturated"] = exploded["path"].isin(low_saturation_edges)
-    mask = exploded.groupby(exploded.index)["is_low_saturated"].any()
+    # chunked explode
+    all_masks = []
+    for start in tqdm(
+        range(0, len(temp_flow_matrix), chunk_size),
+        desc="Processing chunks:",
+        unit="chunk",
+    ):
+        chunk = temp_flow_matrix.iloc[start : start + chunk_size]
+        exploded = chunk.explode("path")
+        exploded["is_low_saturated"] = exploded["path"].isin(low_saturation_edges)
+
+        mask_chunk = exploded.groupby(exploded.index)["is_low_saturated"].any()
+        all_masks.append(mask_chunk)
+
+    # combine masks into single Series
+    mask = pd.concat(all_masks).reindex(temp_flow_matrix.index, fill_value=False)
 
     # isolate those trips
     isolated_flow_matrix = temp_flow_matrix.loc[mask, ["origin", "destination", "flow"]]
@@ -774,6 +796,7 @@ def network_flow_model(
     remain_od: pd.DataFrame,
     flow_breakpoint_dict: Dict[str, float],
     num_of_cpu,
+    drop_threshold=0.5,
 ) -> Tuple[gpd.GeoDataFrame, List, List]:
     """Process-based Network Flow Simulation.
 
@@ -911,7 +934,7 @@ def network_flow_model(
         # and attach cost matrix (fuel, time, toll) to temp_flow_matrix
         logging.info("Calculating edge flows...")
         logging.info(f"Size of temp_flow_matrix is: {len(temp_flow_matrix)}")
-        number_of_chunks = 100  # ???
+        number_of_chunks = 100  # ??? what would be the best number
         (
             temp_edge_flow,
             temp_flow_matrix,
@@ -939,7 +962,12 @@ def network_flow_model(
             temp_isolation,
             r,
         ) = isolate_low_saturation_trips(
-            temp_flow_matrix, remain_od, temp_edge_flow, r
+            temp_flow_matrix,
+            remain_od,
+            temp_edge_flow,
+            r,
+            threshold=drop_threshold,
+            chunk_size=int(len(temp_flow_matrix)) // number_of_chunks,
         )  # low-saturation threshold = 0.5 by default in the function
         logging.info(f"Low saturation trips isolated: {temp_isolation}")
         isolation.extend(isolated_flow_matrix.to_numpy().tolist())
@@ -955,7 +983,6 @@ def network_flow_model(
             how="left",
         )  # ['origin_node', 'destination_node', 'Car21']
         remain_od["Car21"] = remain_od["Car21"] - remain_od["flow"]
-        # remain_od["Car21"] = remain_od["Car21"] - temp_flow_matrix["flow"]
         remain_od.loc[remain_od["Car21"] < 0.5, "Car21"] = 0.0
         remain_od.drop(columns=temp_flow_matrix.columns.tolist(), inplace=True)
         # %%
@@ -980,7 +1007,9 @@ def network_flow_model(
         )
         road_links.drop(columns=["flow"], inplace=True)
         # %%
-        # estimate total travel costs:[origin_node_id, destination_node_id, path(idx), flow, fuel, time, toll]
+        # estimate total travel costs:
+        # [origin_node_id, destination_node_id,
+        # path(edge_idx), path(edge_id), flow, fuel, time, toll]
         odpfc.extend(temp_flow_matrix.to_numpy().tolist())
         cost_fuel += (
             temp_flow_matrix["flow"] * temp_flow_matrix["operating_cost_per_flow"]
@@ -993,21 +1022,23 @@ def network_flow_model(
         ).sum()
         total_cost = cost_fuel + cost_time + cost_toll
 
-        total_remain = remain_od["Car21"].sum()
-        logging.info(f"The total remain flow (after adjustment) is: {total_remain}.")
-
         # %%
-        # update the percentage of flow -> this should go below based on allocated od
-        assigned_sumod += temp_flow_matrix["flow"].sum()
-        percentage_sumod = assigned_sumod / initial_sumod
-        if r >= 1 and percentage_sumod > 0.9:
+        # check point for next iteration
+        remain_od["Car21"] = remain_od["Car21"].round(0).astype(int)
+        # total_remain = remain_od["Car21"].sum()
+        logging.info(
+            f"The total remain flow (after adjustment) is: {remain_od["Car21"].sum()}."
+        )
+        if r >= 1:
+            assigned_sumod += temp_flow_matrix["flow"].sum()
+            percentage_sumod = assigned_sumod / initial_sumod
             logging.info(
                 f"Stop: {percentage_sumod*100}% of flows (exc. isolations) have been "
                 "allocated and there is no edge overflow!"
             )
             break
-        if iter_flag >= 5:
-            logging.info("Stop: Maximum iterations reached (5)!")
+        if iter_flag >= 10:
+            logging.info("Stop: Maximum iterations reached (10)!")
             break
 
         # %%
