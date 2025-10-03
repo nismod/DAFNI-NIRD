@@ -16,7 +16,10 @@ warnings.simplefilter("ignore")
 base_path = Path(load_config()["paths"]["soge_clusters"])
 
 
-def main(num_of_cpu, sample_stride=1):
+def main(
+    num_of_cpu,
+    sample_stride=1,
+):
     """
     Main function to validate the network flow model.
 
@@ -114,18 +117,32 @@ def main(num_of_cpu, sample_stride=1):
     odpfc_df = pd.DataFrame(
         odpfc,
         columns=[
-            "origin",
-            "destination",
+            "origin_node",
+            "destination_node",
+            "path_idx",
             "path",
             "flow",
-            "fuel_cost_per_flow",
+            "operating_cost_per_flow",
             "time_cost_per_flow",
             "toll_cost_per_flow",
         ],
     )
+    odpfc_df.drop(columns=["path_idx"], inplace=True)
+    odpfc_df.path = odpfc_df.path.apply(tuple)
+    odpfc_df = odpfc_df.groupby(
+        by=["origin_node", "destination_node", "path"], as_index=False
+    ).agg(
+        {
+            "flow": "sum",
+            "operating_cost_per_flow": "first",
+            "time_cost_per_flow": "first",
+            "toll_cost_per_flow": "first",
+        }
+    )
+
+    # export files
     out_path = base_path.parent / "results" / "base_scenario" / "revision"
     out_path.mkdir(parents=True, exist_ok=True)
-    # export files
     road_links.to_parquet(out_path / "edge_flows.gpq")
     isolation_df.to_parquet(out_path / "trip_isolations.pq")
     odpfc_df.to_parquet(out_path / "odpfc.pq")
@@ -147,8 +164,9 @@ if __name__ == "__main__":
     logging.basicConfig(
         format="%(asctime)s %(process)d %(filename)s %(message)s", level=logging.INFO
     )
-    try:
-        num_of_cpu, sample_stride = sys.argv[1:]
-        main(int(num_of_cpu), int(sample_stride))
-    except IndexError or NameError:
-        logging.info("Please enter the required number of CPUs!")
+    try:  # in bash inputs will be str by default
+        sample_stride = 1
+        num_of_cpu = sys.argv[1]
+        main(int(num_of_cpu), sample_stride)
+    except (IndexError, NameError):
+        logging.info("Please enter num_of_cpu!")

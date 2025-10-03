@@ -1,21 +1,26 @@
 """Road Network Flow Model - Functions"""
 
-from collections import defaultdict
+# Standard library
 import logging
-from multiprocessing import Pool
 import pickle
 import sys
 import time
-from typing import Tuple, List, Dict
 import warnings
+from collections import defaultdict
+from multiprocessing import Pool
+from typing import Dict, List, Tuple
 
+# Third-party
 import geopandas as gpd  # type: ignore
 import igraph  # type: ignore
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
+# Local
 import nird.constants as cons
+
+# from nird.utils import get_flow_on_edges
 
 warnings.simplefilter("ignore")
 tqdm.pandas()
@@ -472,8 +477,8 @@ def update_network_structure(
     """
     # drop fully utilised edges from the network
     zero_capacity_edges = set(
-        temp_edge_flow.loc[temp_edge_flow["acc_capacity"] < 0.5, "e_idx"].tolist()
-    )
+        temp_edge_flow.loc[temp_edge_flow["acc_capacity"] < 1, "e_idx"].tolist()
+    )  # !!!
     network.delete_edges(list(zero_capacity_edges))
     num_of_edges_update = len(list(network.es))
     if num_of_edges_update == num_of_edges:
@@ -549,7 +554,7 @@ def extract_od_pairs(
 
 def update_od_matrix(
     temp_flow_matrix: pd.DataFrame,
-    remain_od: pd.DataFrame,
+    # remain_od: pd.DataFrame,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Divide the OD matrix into allocated and unallocated sections.
 
@@ -565,23 +570,20 @@ def update_od_matrix(
     isolated_flow_matrix: flow matrix with no path
     remain_od: the remaining od matrix
     """
-    mask = temp_flow_matrix["path"].apply(lambda x: len(x) == 0)
-    isolated_flow_matrix = temp_flow_matrix.loc[
-        mask, ["origin", "destination", "flow"]
-    ]  # drop the cost columns
-    temp_isolation = isolated_flow_matrix.flow.sum()
-    # print(f"Non_allocated_flow: {}")
-    temp_flow_matrix = temp_flow_matrix[~mask]
-    remain_origins = temp_flow_matrix.origin.unique().tolist()
-    remain_destinations = temp_flow_matrix.destination.unique().tolist()
-    remain_od = remain_od[
-        (
-            remain_od["origin_node"].isin(remain_origins)
-            & (remain_od["destination_node"].isin(remain_destinations))
-        )
-    ].reset_index(drop=True)
 
-    return temp_flow_matrix, remain_od, isolated_flow_matrix, temp_isolation
+    mask = temp_flow_matrix["path"].apply(lambda x: len(x) == 0)
+    # isolated od
+    isolated_flow_matrix = temp_flow_matrix.loc[mask].reset_index(drop=True)
+    isolated_flow_matrix.drop(columns="path", inplace=True)
+    temp_isolation = isolated_flow_matrix.flow.sum()  # 666
+    # allocated od (before adjustment)
+    temp_flow_matrix = temp_flow_matrix[~mask].reset_index(drop=True)  # 1032
+
+    return (
+        temp_flow_matrix,
+        isolated_flow_matrix,
+        temp_isolation,
+    )
 
 
 def find_least_cost_path(
@@ -656,7 +658,7 @@ def itter_path(
     edges = network.es
     edges_df = pd.DataFrame(
         {
-            "path": range(len(edges)),  # edges["e_idx"]
+            "path": range(len(edges)),
             "edge_id": edges["e_id"],
             "time_cost": edges["time_cost"],
             "operating_cost": edges["operating_cost"],
@@ -692,7 +694,6 @@ def itter_path(
                 }
             )
         )
-
         # edge flows
         edge_flows.append(
             chunk.groupby("path")["flow"]
@@ -712,82 +713,54 @@ def itter_path(
     return (temp_edge_flow, temp_flow_matrix)
 
 
-def isolate_low_saturation_trips(
-    temp_flow_matrix,
-    remain_od,
-    temp_edge_flow,
-    r,
-    threshold=0.5,
-    chunk_size: int = None,
-):
-    # ensure r does not fall below threshold
-    r = max(r, threshold)
+def retrieve_path_attributes(path: List[int]) -> Dict:
+    """Retrieve attributes for a given path."""
+    if not path:
+        return None
+    edges = shared_network.es
+    edges_df = pd.DataFrame(
+        {
+            "path": range(len(edges)),
+            "edge_id": edges["e_id"],
+            "time_cost": edges["time_cost"],
+            "operating_cost": edges["operating_cost"],
+            "average_toll_cost": edges["average_toll_cost"],
+        }
+    ).set_index("path")
+    # (edge_id, time_cost, operating_cost, average_toll_cost)
 
-    # default = process all at once
-    if chunk_size is None:
-        chunk_size = len(temp_flow_matrix)
+    selected = edges_df.loc[
+        path, ["edge_id", "time_cost", "operating_cost", "average_toll_cost"]
+    ]
 
-    # safe division for saturation
-    saturation_ratio = temp_edge_flow["acc_capacity"] / temp_edge_flow["flow"].replace(
-        0, np.nan
-    )
-    mask = saturation_ratio < threshold
-    low_saturation_edges = set(temp_edge_flow.loc[mask, "e_idx"])
+    # directly compute aggregated values, no Series
+    edge_id_list = selected["edge_id"].tolist()
+    time_cost_sum = selected["time_cost"].sum()
+    operating_cost_sum = selected["operating_cost"].sum()
+    toll_cost_sum = selected["average_toll_cost"].sum()
 
-    if not low_saturation_edges:
-        print("No low saturation edges found.")
-        empty_result = pd.DataFrame(columns=["origin", "destination", "flow"])
-        return temp_edge_flow, temp_flow_matrix, remain_od, empty_result, 0.0, r
+    return edge_id_list, time_cost_sum, operating_cost_sum, toll_cost_sum
 
-    # flag trips that touch any low-saturation edge
-    temp_edge_flow.loc[mask, "flow"] = (
-        0  # since all flows on low-saturation edges are considered isolated,
-        # we set their flow to 0
-    )
-    if "path" not in temp_flow_matrix.columns:
-        print("Error: no 'path' column in temp_flow_matrix for exploded!")
-        sys.exit()
 
-    # chunked explode
-    all_masks = []
-    for start in tqdm(
-        range(0, len(temp_flow_matrix), chunk_size),
-        desc="Processing chunks:",
-        unit="chunk",
-    ):
-        chunk = temp_flow_matrix.iloc[start : start + chunk_size]
-        exploded = chunk.explode("path")
-        exploded["is_low_saturated"] = exploded["path"].isin(low_saturation_edges)
+def calculate_path(tfm_chunk: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Calculate path attributes for a chunk of the flow matrix."""
 
-        mask_chunk = exploded.groupby(exploded.index)["is_low_saturated"].any()
-        all_masks.append(mask_chunk)
+    tfm_chunk[
+        [
+            "edge_id",
+            "time_cost_per_flow",
+            "operating_cost_per_flow",
+            "toll_cost_per_flow",
+        ]
+    ] = tfm_chunk["path"].apply(lambda p: pd.Series(retrieve_path_attributes(p)))
 
-    # combine masks into single Series
-    mask = pd.concat(all_masks).reindex(temp_flow_matrix.index, fill_value=False)
+    return tfm_chunk
 
-    # isolate those trips
-    isolated_flow_matrix = temp_flow_matrix.loc[mask, ["origin", "destination", "flow"]]
-    temp_isolation = isolated_flow_matrix["flow"].sum()
 
-    # update the flow matrix (keep only trips not isolated)
-    temp_flow_matrix = temp_flow_matrix.loc[~mask].reset_index(drop=True)
-
-    # update the OD matrix (keep only relevant origins/destinations)
-    remain_origins = temp_flow_matrix["origin"].unique()
-    remain_destinations = temp_flow_matrix["destination"].unique()
-    remain_od = remain_od[
-        remain_od["origin_node"].isin(remain_origins)
-        & remain_od["destination_node"].isin(remain_destinations)
-    ].reset_index(drop=True)
-
-    return (
-        temp_edge_flow,
-        temp_flow_matrix,
-        remain_od,
-        isolated_flow_matrix,
-        temp_isolation,
-        r,
-    )
+def chunk_df(df, n_chunks: int):
+    """Split dataframe into n roughly equal chunks."""
+    chunk_size = int(np.ceil(len(df) / n_chunks))
+    return [df.iloc[i : i + chunk_size] for i in range(0, len(df), chunk_size)]
 
 
 def network_flow_model(
@@ -796,7 +769,6 @@ def network_flow_model(
     remain_od: pd.DataFrame,
     flow_breakpoint_dict: Dict[str, float],
     num_of_cpu,
-    drop_threshold=0.5,
 ) -> Tuple[gpd.GeoDataFrame, List, List]:
     """Process-based Network Flow Simulation.
 
@@ -838,35 +810,27 @@ def network_flow_model(
         )
         isolated_flow_matrix = remain_od.loc[
             ~mask, ["origin_node", "destination_node", "Car21"]
-        ]
+        ]  # 38
         isolation.extend(isolated_flow_matrix.values.tolist())
-        remain_od = remain_od[mask].reset_index(drop=True)
+        remain_od = remain_od[mask].reset_index(drop=True)  # 1698
         temp_isolation = isolated_flow_matrix.Car21.sum()
         logging.info(f"Initial isolated flows: {temp_isolation}")
-        initial_sumod -= temp_isolation
+        # initial_sumod -= temp_isolation
         # dump the network and edge weight for shared use in multiprocessing
         shared_network_pkl = pickle.dumps(network)
 
         # find the least-cost path for each OD trip
         args = []
-        remain_od = remain_od.set_index("origin_node")
-        list_of_origin_nodes = remain_od.index.unique()
-        for origin_node in tqdm(list_of_origin_nodes, desc="Creating argument list: "):
-            # Use an index to select elements -- faster than creating a mask
-            subset = remain_od.loc[origin_node, ["destination_node", "Car21"]]
-            if isinstance(subset, pd.DataFrame):  # Multiple destination nodes
-                args.append(
-                    (
-                        origin_node,
-                        subset.destination_node.tolist(),
-                        subset.Car21.tolist(),
-                    )
+        for origin_node, subset in tqdm(
+            remain_od.groupby("origin_node"), desc="Creating argument list: "
+        ):
+            args.append(
+                (
+                    origin_node,
+                    subset.destination_node.tolist(),
+                    subset.Car21.tolist(),
                 )
-            elif isinstance(subset, pd.Series):  # Single destination node
-                args.append((origin_node, [subset.destination_node], [subset.Car21]))
-            else:
-                raise ValueError(f"{subset=} is of unexpected {type(subset)=}")
-        remain_od = remain_od.reset_index()
+            )
 
         # batch-processing
         st = time.time()
@@ -913,26 +877,18 @@ def network_flow_model(
         # calculate the non-allocated flows and remaining flows
         (
             temp_flow_matrix,  # to-be-allocated: origin-destination-path-flow
-            remain_od,  # remain od: origin-destination-flow
-            isolated_flow_matrix,  # isolated od: origin-destination-flow
+            isolated_flow_matrix,  # isolated: origin-destination-flow
             temp_isolation,
-        ) = update_od_matrix(temp_flow_matrix, remain_od)
+        ) = update_od_matrix(temp_flow_matrix)
         # update isolation: [origin, destination, flow]
         logging.info(f"Non_allocated_flow: {temp_isolation}")
-        initial_sumod -= temp_isolation
+        # initial_sumod -= temp_isolation
         isolation.extend(isolated_flow_matrix.to_numpy().tolist())
-
-        # calculate the total remaining flows
-        total_remain = remain_od["Car21"].sum()
-        if total_remain == 0:
-            logging.info("Iteration stops: there is no remaining flows!")
-            break
 
         # %%
         # calculate edge flows -> [e_idx, flow]
         # and attach cost matrix (fuel, time, toll) to temp_flow_matrix
         logging.info("Calculating edge flows...")
-        logging.info(f"Size of temp_flow_matrix is: {len(temp_flow_matrix)}")
         number_of_chunks = 100  # ??? what would be the best number
         (
             temp_edge_flow,
@@ -942,6 +898,35 @@ def network_flow_model(
             temp_flow_matrix,
             chunk_size=int(len(temp_flow_matrix)) // number_of_chunks,
         )
+
+        # # check point2: revise to parallel processing
+        # chunks = chunk_df(temp_flow_matrix, n_chunks=num_of_cpu)
+        # logging.info(
+        #     f"Created {len(chunks)} chunks from {len(temp_flow_matrix)} rows "
+        #     f"for parallel processing with {num_of_cpu} CPUs."
+        # )
+        # st = time.time()
+        # logging.info("Calculating o-d-path costs...")
+        # temp_flow_matrix_list = []
+        # with Pool(
+        #     processes=num_of_cpu,
+        #     initializer=worker_init_path,
+        #     initargs=(shared_network_pkl,),
+        # ) as pool:
+        #     for i, flow_matrices in enumerate(
+        #         pool.imap_unordered(calculate_path, chunks)
+        #     ):
+        #         temp_flow_matrix_list.append(flow_matrices)
+        #         if i % 10_000 == 0:
+        #             logging.info(
+        #                 f"Completed {i} of {len(chunks)}, {100 * i / len(chunks):.2f}%"
+        #             )
+        # logging.info(f"Path attributes retrieval time: {time.time() - st}.")
+        # temp_flow_matrix = pd.concat(temp_flow_matrix_list, ignore_index=True)
+
+        # logging.info("Calculating edge flows...")
+        # temp_edge_flow = get_flow_on_edges(temp_flow_matrix, "e_idx", "path", "flow")
+
         # should first check overflows
         # compare the remaining capacity and to-be-allocated flows
         temp_edge_flow = temp_edge_flow.merge(
@@ -952,52 +937,42 @@ def network_flow_model(
         ).min(skipna=True)
         logging.info(f"The minimum r value is: {r}.")
 
-        # isolate low saturation trips (r < 0.5)
-        (
-            temp_edge_flow,
-            temp_flow_matrix,
-            remain_od,
-            isolated_flow_matrix,
-            temp_isolation,
-            r,
-        ) = isolate_low_saturation_trips(
-            temp_flow_matrix,
-            remain_od,
-            temp_edge_flow,
-            r,
-            threshold=drop_threshold,
-            chunk_size=int(len(temp_flow_matrix)) // number_of_chunks,
-        )  # low-saturation threshold = 0.5 by default in the function
-        logging.info(f"Low saturation trips isolated: {temp_isolation}")
-        isolation.extend(isolated_flow_matrix.to_numpy().tolist())
-        initial_sumod -= temp_isolation
+        # %%
+        # use this r to adjust temp_flow_matrix and the remain_od matrix
+        temp_flow_matrix["flow"] *= min(r, 1.0)
+        temp_flow_matrix.flow = temp_flow_matrix.flow.apply(np.ceil)  #!!!
+        assigned_sumod += temp_flow_matrix["flow"].sum()
+        percentage_sumod = assigned_sumod / initial_sumod
+
+        temp_flow_matrix_indexed = temp_flow_matrix.set_index(["origin", "destination"])
+        remain_od[["origin", "destination"]] = remain_od[
+            ["origin_node", "destination_node"]
+        ]
+        remain_od_indexed = remain_od.set_index(["origin", "destination"])
+        merged = temp_flow_matrix_indexed.join(remain_od_indexed, how="inner")
+        merged["Car21"] = (merged["Car21"] - merged["flow"]).clip(
+            lower=0
+        )  # non-negative
+        remain_od = merged.reset_index()[["origin_node", "destination_node", "Car21"]]
+        remain_od.Car21 = remain_od.Car21.apply(np.floor)  #!!!
+        remain_od = remain_od[remain_od.Car21 > 0].reset_index(drop=True)  #!!!
+
+        total_remain = remain_od["Car21"].sum()
+        logging.info(f"The total remain flow (after adjustment) is: {total_remain}.")
 
         # %%
-        # use this r to adjust temp_flow_matrix and the remain od matrix
-        temp_flow_matrix["flow"] *= min(r, 1.0)
-        remain_od = remain_od.merge(
-            temp_flow_matrix,
-            left_on=["origin_node", "destination_node"],
-            right_on=["origin", "destination"],
-            how="left",
-        )  # ['origin_node', 'destination_node', 'Car21']
-        remain_od["Car21"] = remain_od["Car21"] - remain_od["flow"]
-        remain_od.loc[remain_od["Car21"] < 0.5, "Car21"] = 0.0
-        remain_od.drop(columns=temp_flow_matrix.columns.tolist(), inplace=True)
-        remain_od.dropna(subset=["Car21"], inplace=True)  # drop nan records
-        remain_od["Car21"] = remain_od["Car21"].round(0).astype(int)
-        logging.info(
-            f"The total remain flow (after adjustment) is: {remain_od["Car21"].sum()}."
-        )
-        # %%
-        # update road edge attributes (flow, capacity, speed)
-        temp_edge_flow["flow"] *= min(r, 1.0)
+        # update road link attributes (acc_flow, acc_capacity, acc_speed)
+        temp_edge_flow["flow"] = temp_edge_flow["flow"] * min(r, 1.0)
+        temp_edge_flow["flow"] = temp_edge_flow["flow"].apply(np.ceil)  #!!!
+
         road_links = road_links.merge(
             temp_edge_flow[["e_idx", "flow"]], on="e_idx", how="left"
         )
         road_links["flow"] = road_links["flow"].fillna(0.0)
         road_links["acc_flow"] += road_links["flow"]
-        road_links["acc_capacity"] -= road_links["flow"]
+        road_links["acc_capacity"] = (
+            road_links["acc_capacity"] - road_links["flow"]
+        ).clip(lower=0)
         logging.info("Updating edge speeds: ")
         road_links["acc_speed"] = road_links.progress_apply(
             lambda x: update_edge_speed(
@@ -1025,18 +1000,33 @@ def network_flow_model(
             temp_flow_matrix["flow"] * temp_flow_matrix["toll_cost_per_flow"]
         ).sum()
         total_cost = cost_fuel + cost_time + cost_toll
+
         # %%
         # check point for next iteration
         if r >= 1:
-            assigned_sumod += temp_flow_matrix["flow"].sum()
-            percentage_sumod = assigned_sumod / initial_sumod
             logging.info(
-                f"Stop: {percentage_sumod*100}% of flows (exc. isolations) have been "
-                "allocated and there is no edge overflow!"
+                f"Stop: {percentage_sumod*100}% of flows have been allocated"
+                "and there is no edge overflow!"
             )
             break
-        if iter_flag >= 10:
-            logging.info("Stop: Maximum iterations reached (10)!")
+
+        if percentage_sumod > 0.9:
+            # origin_node, destination_node, Car21
+            temp_isolation = remain_od.Car21.sum()
+            isolation.extend(remain_od.to_numpy().tolist())
+            logging.info(
+                f"Stop: {percentage_sumod*100}% of flows have been allocated with "
+                f"{temp_isolation} extra isolated flows."
+            )
+            break
+
+        if iter_flag >= 5:
+            temp_isolation = remain_od.Car21.sum()
+            isolation.extend(remain_od.to_numpy().tolist())
+            logging.info(
+                "Stop: Maximum iterations reached (5) with "
+                f"{temp_isolation} extra isolated flows. "
+            )
             break
 
         # %%
@@ -1047,10 +1037,6 @@ def network_flow_model(
         iter_flag += 1
 
     cList = [cost_time, cost_fuel, cost_toll, total_cost]
-
-    # update the road links attributes
-    road_links.acc_flow = road_links.acc_flow.astype(int)
-    road_links.acc_capacity = road_links.acc_capacity.astype(int)
     road_links = road_links[road_links_columns]
 
     logging.info("The flow simulation is completed!")
