@@ -2,9 +2,9 @@
 import sys
 import json
 import warnings
-from functools import partial
+
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Set
 import logging
 
 import geopandas as gpd
@@ -22,7 +22,7 @@ tqdm.pandas()
 
 
 # %%
-def have_common_items(list1: List, list2: List) -> bool:
+def have_common_items(list1: List, list2: List) -> Set:
     common_items = set(list1) & set(list2)
     return common_items
 
@@ -41,7 +41,7 @@ def bridge_recovery(
     else:
         if damage_level != "no":
             recovery_rate = bridge_recovery_dict.get(damage_level, [])[day]
-            acc_capacity = max(pre_event_capacity * recovery_rate, acc_capacity)
+            acc_capacity = pre_event_capacity * recovery_rate
     return acc_capacity
 
 
@@ -59,15 +59,14 @@ def ordinary_road_recovery(
     else:
         if damage_level != "no":
             recovery_rate = road_recovery_dict.get(damage_level, [])[day]
-            acc_capacity = max(pre_event_capacity * recovery_rate, acc_capacity)
+            acc_capacity = pre_event_capacity * recovery_rate
     return acc_capacity
 
 
 def load_scenarios(base_path: Path) -> Tuple[Dict, Dict]:
     """Load recovery rates for bridges and ordinary roads."""
-    df = pd.read_excel(
-        base_path / "tables" / "recovery design_updated.xlsx",
-        sheet_name="unique_groups",
+    df = pd.read_csv(
+        base_path / "tables" / "recovery design_updated.csv",
     )
 
     bridge_recovery_dict = defaultdict(list)
@@ -84,23 +83,23 @@ def load_scenarios(base_path: Path) -> Tuple[Dict, Dict]:
         road_recovery_dict["extensive"].append(row["road_extensive"])
         road_recovery_dict["severe"].append(row["road_severe"])
         scenarios.append(int(row["scenario"]))
-        conditions.append(int(row["event_day"]))
+        conditions.append(int(row["event_day"]))  # condition = [1, 0, 0, ..]
 
     return (bridge_recovery_dict, road_recovery_dict, scenarios, conditions)
 
 
 def main(
     depth_thres,
-    number_of_cpu,
     flood_key,
-    scenario_idx,
+    scenario_idx,  # 0-12
+    number_of_cpu,
 ):
     # Load recovery scenarios
     (
         bridge_recovery_dict,
         road_recovery_dict,
         scenarios,  # list of scenarios
-        conditions,  # condition == 1: day 0, otherwise: day > 0
+        conditions,  # indicating event day
     ) = load_scenarios(base_path)
 
     # Load network parameters
@@ -123,24 +122,29 @@ def main(
 
     # Load OD path file
     od_path_file = pd.read_parquet(
-        base_path.parent / "results" / "base_scenario" / "odpfc_validation_0221.pq",
-        engine="fastparquet",
+        base_path.parent
+        / "results"
+        / "base_scenario"
+        / "revision"
+        / "odpfc.pq",
+        engine="pyarrow",
     )
 
     # Identify disrupted links
     disrupted_links = (
         road_links.loc[
             (road_links.max_speed < road_links.current_speed)  # all damage levels
-            | (road_links.damage_level_max == "extensive")
-            | (road_links.damage_level_max == "severe"),
+            | (road_links.damage_level_max.isin(["extensive", "severe"])),
             "e_id",
         ]
         .unique()
         .tolist()
     )
-    partial_have_common_items = partial(have_common_items, list2=disrupted_links)
-    od_path_file["disrupted_links"] = np.vectorize(partial_have_common_items)(
-        od_path_file.path
+
+    logging.info("Finding disrupted links among OD pairs...")
+    disrupted_links_set = set(disrupted_links)
+    od_path_file["disrupted_links"] = od_path_file["path"].progress_apply(
+        lambda path: have_common_items(path, disrupted_links_set)
     )
     od_path_file["disrupted_links"] = od_path_file["disrupted_links"].apply(list)
 
@@ -151,7 +155,7 @@ def main(
     # update edge capacities
     logging.info("Updating edge capacities...")
     road_links["acc_capacity"] = road_links["current_capacity"]
-    road_links["acc_capacity"] = road_links.progress_apply(
+    road_links["acc_capacity"] = road_links.apply(
         lambda row: (
             bridge_recovery(
                 scenario_idx,
@@ -175,30 +179,54 @@ def main(
         ),
         axis=1,
     )
-
-    # Update the disrupted OD paths
-    current_capacity_dict = road_links.set_index("e_id")["current_capacity"].to_dict()
+    # Calculate disrupted flows of each OD pair
+    logging.info("Preparing disrupted OD matrix...")
+    acc_capacity_dict = road_links.set_index("e_id")["acc_capacity"].to_dict()
     disrupted_od = od_path_file[
         od_path_file["disrupted_links"].apply(lambda x: len(x)) > 0
     ].reset_index(drop=True)
 
-    disrupted_od = disrupted_od.explode("disrupted_links")
-    disrupted_od["capacities_of_disrupted_links"] = disrupted_od.disrupted_links.map(
-        current_capacity_dict
-    )
+    # conduct exploded chunks
+    num_of_chunks = 100
+    chunk_size = len(disrupted_od) // num_of_chunks
+    out_chunks = []
+    for start in tqdm(
+        range(0, len(disrupted_od), chunk_size), desc="Processing chunks", unit="chunk"
+    ):
+        chunk = disrupted_od.iloc[start : start + chunk_size].copy()
+        chunk = chunk.explode("disrupted_links")
+        chunk["capacities_of_disrupted_links"] = chunk["disrupted_links"].map(
+            acc_capacity_dict
+        )
+        out_chunks.append(chunk)
+    disrupted_od = pd.concat(out_chunks, ignore_index=True)
+
+    disrupted_od.path = disrupted_od.path.apply(tuple)
     disrupted_od = disrupted_od.groupby(
-        by=["origin_node", "destination_node"], as_index=False
+        by=[
+            "origin_node",
+            "destination_node",
+            "path",
+            "flow",
+            "operating_cost_per_flow",
+            "time_cost_per_flow",
+            "toll_cost_per_flow",
+        ],
+        as_index=False,
     ).agg(
         {
-            "path": "first",
-            "flow": "first",
             "capacities_of_disrupted_links": "min",
         }
     )
+    disrupted_od.path = disrupted_od.path.apply(list)
     disrupted_od["disrupted_flow"] = np.maximum(
         0,
         disrupted_od["flow"] - disrupted_od["capacities_of_disrupted_links"],
-    )  # disrupted_od_flows
+    )  #!!! disrupted flows
+
+    logging.info(
+        f"The total disrupted flows: {disrupted_od.disrupted_flow.sum()}"
+    )  #!!! 120298
 
     # Restore capacity for non-disrupted roads
     disrupted_edge_flow = get_flow_on_edges(
@@ -209,14 +237,36 @@ def main(
     road_links.update(disrupted_edge_flow.set_index("e_id")["disrupted_flow"])
     road_links = road_links.reset_index()
 
+    # estimate the pre-event cost matrix for disrupted flows
+    pre_time = (disrupted_od.disrupted_flow * disrupted_od.time_cost_per_flow).sum()
+    pre_operate = (
+        disrupted_od.disrupted_flow * disrupted_od.operating_cost_per_flow
+    ).sum()
+    pre_toll = (disrupted_od.disrupted_flow * disrupted_od.toll_cost_per_flow).sum()
+    total_pre_cost = pre_time + pre_operate + pre_toll
+
+    # total_cost = (
+    #     disrupted_od.disrupted_flow
+    #     * (
+    #         disrupted_od.operating_cost_per_flow
+    #         + disrupted_od.time_cost_per_flow
+    #         + disrupted_od.toll_cost_per_flow
+    #     )
+    # ).sum()
+
     # initial key variables
     logging.info("Initialising key variables for flow modelling...")
+    # (1) disrupted od matrix
+    disrupted_od.rename(columns={"disrupted_flow": "Car21"}, inplace=True)
+    #!!! make sure that disrupted flow goes to the rerouting analysis
+
+    # (2) edge attributes
     road_links["acc_capacity"] = (
         road_links["acc_capacity"] + road_links["disrupted_flow"]
     )
     road_links["acc_flow"] = road_links["current_flow"] - road_links["disrupted_flow"]
     logging.info("Updating road speed limits...")
-    road_links["acc_speed"] = road_links.progress_apply(
+    road_links["acc_speed"] = road_links.apply(
         lambda x: func.update_edge_speed(
             x["combined_label"],  # constant
             x["acc_flow"],  # variable
@@ -229,20 +279,7 @@ def main(
     if event_day:  # the occurance of damage
         road_links["acc_speed"] = road_links[["acc_speed", "max_speed"]].min(axis=1)
 
-    logging.info("Preparing disrupted OD matrix...")
-    disrupted_od.rename(columns={"flow": "Car21"}, inplace=True)
-
-    total_cost = (
-        disrupted_od.disrupted_flow
-        * (
-            disrupted_od.operating_cost_per_flow
-            + disrupted_od.time_cost_per_flow
-            + disrupted_od.toll_cost_per_flow
-        )
-    ).sum()
-    logging.info(f"The original travel costs for disrupted od: £{total_cost}")
-
-    # create network (time-consuming when updating network edge index)
+    # (3) create network (time-consuming when updating network edge index)
     logging.info("Creating igraph network...")
     valid_road_links = road_links[
         (road_links["acc_capacity"] > 0) & (road_links["acc_speed"] > 0)
@@ -251,36 +288,33 @@ def main(
 
     # run flow rerouting analysis
     logging.info("Running flow simulation...")
-    valid_road_links, isolation, _, (_, _, _, total_cost2) = func.network_flow_model(
+    (
+        valid_road_links,
+        isolation,
+        _,
+        (after_time, after_operate, after_toll, total_after_cost),
+    ) = func.network_flow_model(
         valid_road_links,
         network,
         disrupted_od[["origin_node", "destination_node", "Car21"]],
         flow_breakpoint_dict,
         num_of_cpu=number_of_cpu,
     )
-    rerouting_cost = total_cost2 - total_cost
-    logging.info(f"The total travel costs after disruption: £{total_cost2}")
-    logging.info(f"The rerouting cost for scenario {scenario_idx}: £{rerouting_cost}")
 
-    # rerouting costs
-    cDict[scenario_idx] = rerouting_cost
-    cost_df = pd.DataFrame.from_dict(
-        cDict, orient="index", columns=["rerouting_cost"]
-    ).reset_index()
-    cost_df.rename(columns={"index": "scenario"}, inplace=True)
-    # edge flows
-    road_links = road_links.set_index("e_id")
-    road_links.update(valid_road_links.set_index("e_id")["acc_flow"])
-    road_links = road_links.reset_index()
-    road_links["change_flow"] = road_links["acc_flow"] - road_links["current_flow"]
-    # trip isolations
-    isolation_df = pd.DataFrame(
-        isolation,
-        columns=[
-            "origin_node",
-            "destination_node",
-            "Car21",
-        ],
+    # estimate rerouting sub costs
+    rer_time = after_time - pre_time
+    rer_operate = after_operate - pre_operate
+    rer_toll = after_toll - pre_toll
+    rerouting_cost = rer_time + rer_operate + rer_toll
+
+    logging.info(
+        f"The original travel costs for disrupted od: £ million {total_pre_cost/ 1e6}"
+    )
+    logging.info(
+        f"The total travel costs after disruption: £ million {total_after_cost/ 1e6}"
+    )
+    logging.info(
+        f"The rerouting cost for scenario {scenario_idx}: £ million {rerouting_cost / 1e6}"
     )
 
     logging.info("Saving outputs to disk...")
@@ -293,45 +327,49 @@ def main(
         / str(flood_key)  # e.g.,17
     )
     out_path.mkdir(parents=True, exist_ok=True)
+
+    # rerouting costs
+    cDict[scenario_idx] = [rer_time, rer_operate, rer_toll, rerouting_cost]
+    cost_df = pd.DataFrame.from_dict(
+        cDict,
+        orient="index",
+        columns=["rer_time", "rer_operate", "rer_toll", "rerouting_cost"],
+    ).reset_index()
+    cost_df.rename(columns={"index": "scenario"}, inplace=True)
     cost_df.to_csv(out_path / f"cost_matrix_{scenario_idx}.csv", index=False)
+
+    # edge flows
+    road_links = road_links.set_index("e_id")
+    road_links.update(valid_road_links.set_index("e_id")["acc_flow"])
+    road_links = road_links.reset_index()
+    road_links["change_flow"] = road_links["acc_flow"] - road_links["current_flow"]
+    road_links.to_parquet(out_path / f"edge_flows_{scenario_idx}.gpq")
+
+    # trip isolations
+    isolation_df = pd.DataFrame(
+        isolation,
+        columns=[
+            "origin_node",
+            "destination_node",
+            "Car21",
+        ],
+    )
     isolation_df.to_csv(
         out_path / f"trip_isolations_{scenario_idx}.csv",
         index=False,
     )
-    road_links.to_parquet(out_path / f"edge_flows_{scenario_idx}.gpq")
 
 
 if __name__ == "__main__":
-    try:
-        depth_thres = int(sys.argv[1])
-    except (IndexError, ValueError):
-        logging.info(
-            "Error: Please provide the flood depth for road closure "
-            "(e.g., 15, 30 or 60 cm) as the first argument!"
-        )
-        sys.exit(1)
-
-    try:
-        number_of_cpu = int(sys.argv[2])
-    except (IndexError, ValueError):
-        logging.info("Error: Please provide the number of CPUs as the second argument!")
-        sys.exit(1)
-
-    try:
-        flood_key = int(sys.argv[3])
-    except (IndexError, ValueError):
-        logging.info("Error: Please provide the flood key!")
-        sys.exit(1)
-
-    try:
-        scenario_idx = int(sys.argv[4])  # 0-12
-    except (IndexError, ValueError):
-        logging.info(
-            "Error: Please provide the scenario index (0-12) as the fourth argument!"
-        )
-        sys.exit(1)
-
     logging.basicConfig(
         format="%(asctime)s %(process)d %(filename)s %(message)s", level=logging.INFO
     )
-    main(depth_thres, number_of_cpu, flood_key, scenario_idx)
+    try:
+        depth_key, event_key, day_key, num_of_cpu = sys.argv[1:]
+        main(int(depth_key), int(event_key), int(day_key), int(num_of_cpu))
+
+    except (IndexError, ValueError):
+        logging.info(
+            "Please provide inputs: depth_key, event_key, day_key, and num_cpu!"
+        )
+        sys.exit(1)
