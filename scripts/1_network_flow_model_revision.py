@@ -17,7 +17,8 @@ base_path = Path(load_config()["paths"]["soge_clusters"])
 
 
 def main(
-    num_of_cpu,
+    num_of_chunk: int,
+    num_of_cpu: int,
     sample_stride=1,
 ):
     """
@@ -103,6 +104,7 @@ def main(
         network,
         od_node_2021,
         flow_breakpoint_dict,
+        num_of_chunk,
         num_of_cpu,
     )
 
@@ -166,7 +168,8 @@ if __name__ == "__main__":
     )
     try:  # in bash inputs will be str by default
         sample_stride = 1
-        num_of_cpu = sys.argv[1]
-        main(int(num_of_cpu), sample_stride)
+        num_of_chunk = sys.argv[1]
+        num_of_cpu = sys.argv[2]
+        main(int(num_of_chunk), int(num_of_cpu), sample_stride)
     except (IndexError, NameError):
         logging.info("Please enter num_of_cpu!")

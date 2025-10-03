@@ -768,7 +768,8 @@ def network_flow_model(
     network: igraph.Graph,
     remain_od: pd.DataFrame,
     flow_breakpoint_dict: Dict[str, float],
-    num_of_cpu,
+    num_of_chunk: int,
+    num_of_cpu: int,
 ) -> Tuple[gpd.GeoDataFrame, List, List]:
     """Process-based Network Flow Simulation.
 
@@ -889,14 +890,14 @@ def network_flow_model(
         # calculate edge flows -> [e_idx, flow]
         # and attach cost matrix (fuel, time, toll) to temp_flow_matrix
         logging.info("Calculating edge flows...")
-        number_of_chunks = 100  # ??? what would be the best number
+        # number_of_chunks = 100  # ??? what would be the best number
         (
             temp_edge_flow,
             temp_flow_matrix,
         ) = itter_path(
             network,
             temp_flow_matrix,
-            chunk_size=int(len(temp_flow_matrix)) // number_of_chunks,
+            chunk_size=int(len(temp_flow_matrix)) // num_of_chunk,
         )
 
         # # check point2: revise to parallel processing
