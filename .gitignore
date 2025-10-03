@@ -108,6 +108,9 @@ cython_debug/
 # VSCode settings
 .vscode
 
+# IBIS temp files
+*.tmp
+
 # Local-only files
 *.tar
 *.tar.gz
@@ -116,3 +119,5 @@ test_outputs
 *.sh
 *.out
 _plottings_*
+*.csv
+*.png
