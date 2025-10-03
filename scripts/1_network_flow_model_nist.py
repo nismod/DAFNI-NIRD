@@ -19,8 +19,9 @@ nist_path = Path(load_config()["paths"]["NIST"])
 
 
 def main(
-    year,
-    num_of_cpu,
+    year: int,
+    num_of_chunk: int,
+    num_of_cpu: int,
     sample_stride=1,
 ):
     start_time = time.time()
@@ -79,6 +80,7 @@ def main(
         network,
         od_node,
         flow_breakpoint_dict,
+        num_of_chunk,
         num_of_cpu,
     )
 
@@ -101,8 +103,10 @@ if __name__ == "__main__":
         format="%(asctime)s %(process)d %(filename)s %(message)s", level=logging.INFO
     )
     try:
-        year, num_of_cpu = sys.argv[1:]
+        year, num_of_chunk, num_of_cpu = sys.argv[1:]
         sample_stride = 1
-        main(int(year), int(num_of_cpu), sample_stride)
+        main(int(year), int(num_of_chunk), int(num_of_cpu), sample_stride)
     except (IndexError, NameError):
-        logging.info("No input year and num_of_cpu, using default values")
+        logging.info(
+            "No input year, num_of_chunk, and num_of_cpu, using default values"
+        )

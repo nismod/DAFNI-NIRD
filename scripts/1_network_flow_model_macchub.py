@@ -21,6 +21,7 @@ macc_path = Path(load_config()["paths"]["MACCHUB"])
 def main(
     year,
     ssp,
+    num_of_chunk,
     num_of_cpu,
     sample_stride=1,
 ):
@@ -85,6 +86,7 @@ def main(
         network,
         od_node,
         flow_breakpoint_dict,
+        num_of_chunk,
         num_of_cpu,
     )
 
@@ -136,8 +138,14 @@ if __name__ == "__main__":
         format="%(asctime)s %(process)d %(filename)s %(message)s", level=logging.INFO
     )
     try:
-        year, ssp, num_of_cpu = sys.argv[1:]
+        year, ssp, num_of_chunk, num_of_cpu = sys.argv[1:]
         sample_stride = 1
-        main(int(year), int(ssp), int(num_of_cpu), sample_stride=sample_stride)
+        main(
+            int(year),
+            int(ssp),
+            int(num_of_chunk),
+            int(num_of_cpu),
+            sample_stride=sample_stride,
+        )
     except (IndexError, NameError):
-        logging.info("Please enter year, ssp, num_of_cpu!")
+        logging.info("Please enter year, ssp, num_of_chunk, and num_of_cpu!")
