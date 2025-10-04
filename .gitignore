@@ -118,6 +118,5 @@ test_inputs
 test_outputs
 *.sh
 *.out
-_plottings_*
 *.csv
 *.png

@@ -91,7 +91,8 @@ def load_scenarios(base_path: Path) -> Tuple[Dict, Dict]:
 def main(
     depth_thres,
     flood_key,
-    number_of_cpu,
+    num_of_chunk,
+    num_of_cpu,
 ):
     logging.info("Start...")
     # Load recovery scenarios
@@ -104,11 +105,7 @@ def main(
 
     # Load OD path file
     od_path_file = pd.read_parquet(
-        base_path.parent
-        / "results"
-        / "base_scenario"
-        / "revision"
-        / "odpfc.pq",
+        base_path.parent / "results" / "base_scenario" / "revision" / "odpfc.pq",
         engine="pyarrow",
     )
 
@@ -290,7 +287,8 @@ def main(
             network,
             disrupted_od[["origin_node", "destination_node", "Car21"]],
             flow_breakpoint_dict,
-            num_of_cpu=number_of_cpu,
+            num_of_chunk,
+            num_of_cpu,
         )
 
         # estimate rerouting cost matrix
@@ -372,8 +370,10 @@ if __name__ == "__main__":
         format="%(asctime)s %(process)d %(filename)s %(message)s", level=logging.INFO
     )
     try:
-        depth_key, event_key, num_of_cpu = sys.argv[1:]
-        main(int(depth_key), int(event_key), int(num_of_cpu))
+        depth_key, event_key, num_of_chunk, num_of_cpu = sys.argv[1:]
+        main(int(depth_key), int(event_key), int(num_of_chunk), int(num_of_cpu))
     except (IndexError, ValueError):
-        logging.info("Please provide inputs: depth_key, event_key, and num_of_cpu!")
+        logging.info(
+            "Please provide inputs: depth_key, event_key, num_of_chunk, and num_of_cpu!"
+        )
         sys.exit(1)
