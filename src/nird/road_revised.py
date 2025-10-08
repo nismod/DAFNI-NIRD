@@ -479,8 +479,8 @@ def update_network_structure(
     temp_edge_flow = temp_edge_flow.set_index("e_idx")
     road_links = road_links.set_index("e_idx")
     temp_edge_flow["acc_capacity"].update(road_links["acc_capacity"])
-    temp_edge_flow.reset_index(drop=True, inplace=True)
-    road_links.reset_index(drop=True, inplace=True)
+    temp_edge_flow.reset_index(inplace=True)
+    road_links.reset_index(inplace=True)
     # drop fully utilised edges from the network
     zero_capacity_edges = set(
         temp_edge_flow.loc[temp_edge_flow["acc_capacity"] < 1, "e_idx"].tolist()
