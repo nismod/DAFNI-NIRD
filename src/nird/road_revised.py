@@ -896,7 +896,7 @@ def network_flow_model(
         # calculate edge flows -> [e_idx, flow]
         # and attach cost matrix (fuel, time, toll) to temp_flow_matrix
         logging.info("Calculating edge flows...")
-        # number_of_chunks = 100  # ??? what would be the best number
+        # number_of_chunks = 100 # user-defined parameter: memory vs speed
         (
             temp_edge_flow,
             temp_flow_matrix,
@@ -946,8 +946,10 @@ def network_flow_model(
 
         # %%
         # use this r to adjust temp_flow_matrix and the remain_od matrix
-        temp_flow_matrix["flow"] *= min(r, 1.0)
-        temp_flow_matrix.flow = temp_flow_matrix.flow.apply(np.ceil)  #!!!
+        if iter_flag <= 5:
+            temp_flow_matrix["flow"] *= min(r, 1.0)
+        temp_flow_matrix["flow"] = temp_flow_matrix.flow.apply(np.ceil)
+
         assigned_sumod += temp_flow_matrix["flow"].sum()
         percentage_sumod = assigned_sumod / initial_sumod
 
@@ -961,16 +963,17 @@ def network_flow_model(
             lower=0
         )  # non-negative
         remain_od = merged.reset_index()[["origin_node", "destination_node", "Car21"]]
-        remain_od.Car21 = remain_od.Car21.apply(np.floor)  #!!!
-        remain_od = remain_od[remain_od.Car21 > 0].reset_index(drop=True)  #!!!
+        remain_od.Car21 = remain_od.Car21.apply(np.floor)
+        remain_od = remain_od[remain_od.Car21 > 0].reset_index(drop=True)
 
         total_remain = remain_od["Car21"].sum()
         logging.info(f"The total remain flow (after adjustment) is: {total_remain}.")
 
         # %%
         # update road link attributes (acc_flow, acc_capacity, acc_speed)
-        temp_edge_flow["flow"] = temp_edge_flow["flow"] * min(r, 1.0)
-        temp_edge_flow["flow"] = temp_edge_flow["flow"].apply(np.ceil)  #!!!
+        if iter_flag <= 5:
+            temp_edge_flow["flow"] = temp_edge_flow["flow"] * min(r, 1.0)
+        temp_edge_flow["flow"] = temp_edge_flow["flow"].apply(np.ceil)
 
         road_links = road_links.merge(
             temp_edge_flow[["e_idx", "flow"]], on="e_idx", how="left"
@@ -1017,23 +1020,24 @@ def network_flow_model(
             )
             break
 
-        if percentage_sumod > 0.9:
-            # origin_node, destination_node, Car21
-            temp_isolation = remain_od.Car21.sum()
-            isolation.extend(remain_od.to_numpy().tolist())
-            logging.info(
-                f"Stop: {percentage_sumod*100}% of flows have been allocated with "
-                f"{temp_isolation} extra isolated flows."
-            )
-            break
+        # if percentage_sumod > 0.9:
+        #     # origin_node, destination_node, Car21
+        #     temp_isolation = remain_od.Car21.sum()
+        #     isolation.extend(remain_od.to_numpy().tolist())
+        #     logging.info(
+        #         f"Stop: {percentage_sumod*100}% of flows have been allocated with "
+        #         f"{temp_isolation} extra isolated flows."
+        #     )
+        #     break
 
-        if iter_flag >= 5:
-            temp_isolation = remain_od.Car21.sum()
-            isolation.extend(remain_od.to_numpy().tolist())
-            logging.info(
-                "Stop: Maximum iterations reached (5) with "
-                f"{temp_isolation} extra isolated flows. "
-            )
+        if iter_flag > 5:
+            # temp_isolation = remain_od.Car21.sum()
+            # isolation.extend(remain_od.to_numpy().tolist())
+            # logging.info(
+            #     "Stop: Maximum iterations reached (5) with "
+            #     f"{temp_isolation} extra isolated flows. "
+            # )
+            logging.info("Stop: Maximum iterations reached (5)!")
             break
 
         # %%
