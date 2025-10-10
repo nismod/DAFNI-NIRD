@@ -33,15 +33,10 @@ def bridge_recovery(
     pre_event_capacity: float,
     acc_capacity: float,
     bridge_recovery_dict: Dict,
-    event_day: bool,
 ) -> Tuple[float, float]:
-    if event_day:
-        if damage_level in ["extensive", "severe"]:
-            acc_capacity = 0
-    else:
-        if damage_level != "no":
-            recovery_rate = bridge_recovery_dict.get(damage_level, [])[day]
-            acc_capacity = pre_event_capacity * recovery_rate
+    if damage_level != "no":
+        recovery_rate = bridge_recovery_dict.get(damage_level, [])[day]
+        acc_capacity = pre_event_capacity * recovery_rate
     return acc_capacity
 
 
@@ -51,15 +46,10 @@ def ordinary_road_recovery(
     pre_event_capacity: float,
     acc_capacity: float,
     road_recovery_dict: Dict,
-    event_day: bool,
 ) -> Tuple[float, float]:
-    if event_day:  # the occurance of damage
-        if damage_level in ["extensive", "severe"]:
-            acc_capacity = 0
-    else:
-        if damage_level != "no":
-            recovery_rate = road_recovery_dict.get(damage_level, [])[day]
-            acc_capacity = pre_event_capacity * recovery_rate
+    if damage_level != "no":
+        recovery_rate = road_recovery_dict.get(damage_level, [])[day]
+        acc_capacity = pre_event_capacity * recovery_rate
     return acc_capacity
 
 
@@ -91,7 +81,7 @@ def load_scenarios(base_path: Path) -> Tuple[Dict, Dict]:
 def main(
     depth_thres,
     flood_key,
-    scenario_idx,  # 0-12
+    scenario_idx,
     num_of_chunk,
     num_of_cpu,
 ):
@@ -102,6 +92,12 @@ def main(
         scenarios,  # list of scenarios
         conditions,  # indicating event day
     ) = load_scenarios(base_path)
+
+    # Load OD path file
+    od_path_file = pd.read_parquet(
+        base_path.parent / "results" / "base_scenario" / "revision" / "odpfc.pq",
+        engine="pyarrow",
+    )
 
     # Load network parameters
     with open(base_path / "parameters" / "flow_breakpoint_dict.json", "r") as f:
@@ -119,12 +115,6 @@ def main(
     )
     road_links["breakpoint_flows"] = road_links["combined_label"].map(
         flow_breakpoint_dict
-    )
-
-    # Load OD path file
-    od_path_file = pd.read_parquet(
-        base_path.parent / "results" / "base_scenario" / "revision" / "odpfc.pq",
-        engine="pyarrow",
     )
 
     # Identify disrupted links
@@ -160,7 +150,6 @@ def main(
                 row["current_capacity"],
                 row["acc_capacity"],
                 bridge_recovery_dict,
-                event_day,
             )
             if row["road_label"] == "bridge"
             else (
@@ -170,7 +159,6 @@ def main(
                     row["current_capacity"],
                     row["acc_capacity"],
                     road_recovery_dict,
-                    event_day,
                 )
             )
         ),
@@ -219,11 +207,8 @@ def main(
     disrupted_od["disrupted_flow"] = np.maximum(
         0,
         disrupted_od["flow"] - disrupted_od["capacities_of_disrupted_links"],
-    )  #!!! disrupted flows
-
-    logging.info(
-        f"The total disrupted flows: {disrupted_od.disrupted_flow.sum()}"
-    )  #!!! 120298
+    )
+    logging.info(f"The total disrupted flows: {disrupted_od.disrupted_flow.sum()}")
 
     # Restore capacity for non-disrupted roads
     disrupted_edge_flow = get_flow_on_edges(
@@ -242,22 +227,9 @@ def main(
     pre_toll = (disrupted_od.disrupted_flow * disrupted_od.toll_cost_per_flow).sum()
     total_pre_cost = pre_time + pre_operate + pre_toll
 
-    # total_cost = (
-    #     disrupted_od.disrupted_flow
-    #     * (
-    #         disrupted_od.operating_cost_per_flow
-    #         + disrupted_od.time_cost_per_flow
-    #         + disrupted_od.toll_cost_per_flow
-    #     )
-    # ).sum()
-
     # initial key variables
     logging.info("Initialising key variables for flow modelling...")
-    # (1) disrupted od matrix
     disrupted_od.rename(columns={"disrupted_flow": "Car21"}, inplace=True)
-    #!!! make sure that disrupted flow goes to the rerouting analysis
-
-    # (2) edge attributes
     road_links["acc_capacity"] = (
         road_links["acc_capacity"] + road_links["disrupted_flow"]
     )
@@ -274,9 +246,12 @@ def main(
         axis=1,
     )
     if event_day:  # the occurance of damage
-        road_links["acc_speed"] = road_links[["acc_speed", "max_speed"]].min(axis=1)
+        mask = road_links["damage_level_max"].isin(["extensive", "severe"])
+        road_links.loc[mask, "acc_speed"] = road_links.loc[
+            mask, ["acc_speed", "max_speed"]
+        ].min(axis=1)
 
-    # (3) create network (time-consuming when updating network edge index)
+    # create network (time-consuming when updating network edge index)
     logging.info("Creating igraph network...")
     valid_road_links = road_links[
         (road_links["acc_capacity"] > 0) & (road_links["acc_speed"] > 0)
@@ -289,7 +264,7 @@ def main(
         valid_road_links,
         isolation,
         _,
-        (after_time, after_operate, after_toll, total_after_cost),
+        (post_time, post_operate, post_toll, total_post_cost),
     ) = func.network_flow_model(
         valid_road_links,
         network,
@@ -300,16 +275,16 @@ def main(
     )
 
     # estimate rerouting sub costs
-    rer_time = after_time - pre_time
-    rer_operate = after_operate - pre_operate
-    rer_toll = after_toll - pre_toll
+    rer_time = post_time - pre_time
+    rer_operate = post_operate - pre_operate
+    rer_toll = post_toll - pre_toll
     rerouting_cost = rer_time + rer_operate + rer_toll
 
     logging.info(
         f"The original travel costs for disrupted od: £ million {total_pre_cost/ 1e6}"
     )
     logging.info(
-        f"The total travel costs after disruption: £ million {total_after_cost/ 1e6}"
+        f"The total travel costs after disruption: £ million {total_post_cost/ 1e6}"
     )
     logging.info(
         f"The rerouting cost for scenario {scenario_idx}: £ million {rerouting_cost / 1e6}"
@@ -334,14 +309,7 @@ def main(
         columns=["rer_time", "rer_operate", "rer_toll", "rerouting_cost"],
     ).reset_index()
     cost_df.rename(columns={"index": "scenario"}, inplace=True)
-    cost_df.to_csv(out_path / f"cost_matrix_{scenario_idx}.csv", index=False)
-
-    # edge flows
-    road_links = road_links.set_index("e_id")
-    road_links.update(valid_road_links.set_index("e_id")["acc_flow"])
-    road_links = road_links.reset_index()
-    road_links["change_flow"] = road_links["acc_flow"] - road_links["current_flow"]
-    road_links.to_parquet(out_path / f"edge_flows_{scenario_idx}.gpq")
+    cost_df.to_csv(out_path / f"rerouting_cost_{scenario_idx}.csv", index=False)
 
     # trip isolations
     isolation_df = pd.DataFrame(
@@ -356,6 +324,13 @@ def main(
         out_path / f"trip_isolations_{scenario_idx}.csv",
         index=False,
     )
+
+    # edge flows
+    road_links = road_links.set_index("e_id")
+    road_links.update(valid_road_links.set_index("e_id")["acc_flow"])
+    road_links = road_links.reset_index()
+    road_links["change_flow"] = road_links["acc_flow"] - road_links["current_flow"]
+    road_links.to_parquet(out_path / f"edge_flows_{scenario_idx}.gpq")
 
 
 if __name__ == "__main__":

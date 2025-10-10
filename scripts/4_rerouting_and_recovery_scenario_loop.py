@@ -33,15 +33,15 @@ def bridge_recovery(
     pre_event_capacity: float,
     acc_capacity: float,
     bridge_recovery_dict: Dict,
-    event_day: bool,
+    # event_day: bool,
 ) -> float:
-    if event_day:
-        if damage_level in ["extensive", "severe"]:
-            acc_capacity = 0
-    else:
-        if damage_level != "no":
-            recovery_rate = bridge_recovery_dict.get(damage_level, [])[day]
-            acc_capacity = pre_event_capacity * recovery_rate
+    # if event_day:
+    #     if damage_level in ["extensive", "severe"]:
+    #         acc_capacity = 0
+    # else:
+    if damage_level != "no":  # minor, moderate, extensive, severe
+        recovery_rate = bridge_recovery_dict.get(damage_level, [])[day]
+        acc_capacity = pre_event_capacity * recovery_rate
     return acc_capacity
 
 
@@ -51,15 +51,15 @@ def ordinary_road_recovery(
     pre_event_capacity: float,
     acc_capacity: float,
     road_recovery_dict: Dict,
-    event_day: bool,
+    # event_day: bool,
 ) -> float:
-    if event_day:  # the occurance of damage
-        if damage_level in ["extensive", "severe"]:
-            acc_capacity = 0
-    else:
-        if damage_level != "no":
-            recovery_rate = road_recovery_dict.get(damage_level, [])[day]
-            acc_capacity = pre_event_capacity * recovery_rate
+    #     if event_day:  # the occurance of damage
+    #         if damage_level in ["extensive", "severe"]:
+    #             acc_capacity = 0
+    # else:
+    if damage_level != "no":  # minor, moderate, extensive, severe
+        recovery_rate = road_recovery_dict.get(damage_level, [])[day]
+        acc_capacity = pre_event_capacity * recovery_rate
     return acc_capacity
 
 
@@ -144,13 +144,13 @@ def main(
     )
     od_path_file["disrupted_links"] = od_path_file["disrupted_links"].apply(list)
 
-    # Recovery analysis loop (13 scenarios)
+    # Recovery analysis loop
     cDict = {}
     for scenario_idx in range(len(scenarios)):  # 0-8
         logging.info(f"Rerouting Analysis on Scenario-{scenario_idx}...")
         event_day = conditions[scenario_idx] == 1
         # update edge capacities after recovery
-        logging.info("Updating edge capacities on D-0...")
+        logging.info(f"Updating edge capacities on D-{scenario_idx}...")
         road_links["acc_capacity"] = road_links["current_capacity"]
         road_links["acc_capacity"] = road_links.apply(
             lambda row: (
@@ -160,7 +160,7 @@ def main(
                     row["current_capacity"],
                     row["acc_capacity"],
                     bridge_recovery_dict,
-                    event_day,
+                    # event_day,
                 )
                 if row["road_label"] == "bridge"
                 else (
@@ -170,7 +170,7 @@ def main(
                         row["current_capacity"],
                         row["acc_capacity"],
                         road_recovery_dict,
-                        event_day,
+                        # event_day,
                     )
                 )
             ),
@@ -222,8 +222,7 @@ def main(
         disrupted_od["disrupted_flow"] = np.maximum(
             0,
             disrupted_od["flow"] - disrupted_od["capacities_of_disrupted_links"],
-        )  #!!! disrupted flows
-
+        )
         logging.info(f"The total disrupted flows: {disrupted_od.disrupted_flow.sum()}")
 
         # Restore capacity for non-disrupted roads
@@ -265,8 +264,11 @@ def main(
             ),
             axis=1,
         )
-        if event_day:  # the occurance of damage
-            road_links["acc_speed"] = road_links[["acc_speed", "max_speed"]].min(axis=1)
+        if event_day:
+            mask = road_links["damage_level_max"].isin(["extensive", "severe"])
+            road_links.loc[mask, "acc_speed"] = road_links.loc[
+                mask, ["acc_speed", "max_speed"]
+            ].min(axis=1)
 
         # create network (time-consuming when updating network edge index)
         logging.info("Creating igraph network...")
@@ -281,7 +283,7 @@ def main(
             valid_road_links,
             isolation,
             _,
-            (after_time, after_operate, after_toll, total_after_cost),
+            (post_time, post_operate, post_toll, total_post_cost),
         ) = func.network_flow_model(
             valid_road_links,
             network,
@@ -292,15 +294,15 @@ def main(
         )
 
         # estimate rerouting cost matrix
-        rer_time = after_time - pre_time
-        rer_operate = after_operate - pre_operate
-        rer_toll = after_toll - pre_toll
+        rer_time = post_time - pre_time
+        rer_operate = post_operate - pre_operate
+        rer_toll = post_toll - pre_toll
         rerouting_cost = rer_time + rer_operate + rer_toll
         logging.info(
             f"The original travel costs for disrupted od: £ million {total_pre_cost/ 1e6}"
         )
         logging.info(
-            f"The total travel costs after disruption: £ million {total_after_cost/ 1e6}"
+            f"The total travel costs after disruption: £ million {total_post_cost/ 1e6}"
         )
         logging.info(
             f"The rerouting cost for scenario {scenario_idx}: £ million {rerouting_cost / 1e6}"

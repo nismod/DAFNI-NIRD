@@ -172,4 +172,4 @@ if __name__ == "__main__":
         num_of_cpu = sys.argv[2]
         main(int(num_of_chunk), int(num_of_cpu), sample_stride)
     except (IndexError, NameError):
-        logging.info("Please enter num_of_cpu!")
+        logging.info("Please enter num_of_chunk, num_of_cpu!")
