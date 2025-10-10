@@ -476,11 +476,11 @@ def update_network_structure(
     The updated igraph network
     """
     # update the remaining capacity
+    road_links_valid = road_links.dropna(subset= ["e_idx"]).set_index("e_idx")
     temp_edge_flow = temp_edge_flow.set_index("e_idx")
-    road_links = road_links.set_index("e_idx")
     temp_edge_flow["acc_capacity"].update(road_links["acc_capacity"])
     temp_edge_flow.reset_index(inplace=True)
-    road_links.reset_index(inplace=True)
+
     # drop fully utilised edges from the network
     zero_capacity_edges = set(
         temp_edge_flow.loc[temp_edge_flow["acc_capacity"] < 1, "e_idx"].tolist()
@@ -494,26 +494,27 @@ def update_network_structure(
 
     # update edges' weights
     remaining_edges = network.es["e_id"]
-    graph_df = road_links[road_links.e_id.isin(remaining_edges)][
-        [
-            "from_id",
-            "to_id",
-            "e_id",
-            "weight",
-            "time_cost",
-            "operating_cost",
-            "average_toll_cost",
-        ]
-    ].reset_index(drop=True)
+    # graph_df = road_links[road_links.e_id.isin(remaining_edges)][
+    #     [
+    #         "from_id",
+    #         "to_id",
+    #         "e_id",
+    #         "weight",
+    #         "time_cost",
+    #         "operating_cost",
+    #         "average_toll_cost",
+    #     ]
+    # ].reset_index(drop=True)
 
-    network = igraph.Graph.TupleList(
-        graph_df.itertuples(index=False),
-        edge_attrs=list(graph_df.columns)[2:],
-        directed=False,
-    )
+    # network = igraph.Graph.TupleList(
+    #     graph_df.itertuples(index=False),
+    #     edge_attrs=list(graph_df.columns)[2:],
+    #     directed=False,
+    # )
     # convert edge_id to edge_idx as per network edges
     index_map = {eid: idx for idx, eid in enumerate(network.es["e_id"])}
-    road_links["e_idx"] = road_links["e_id"].map(index_map)
+    road_links["e_idx"] = road_links["e_id"].map(index_map) # return nan if empty
+
     return network, road_links
 
 
@@ -1020,15 +1021,15 @@ def network_flow_model(
             )
             break
 
-        # if percentage_sumod > 0.9:
-        #     # origin_node, destination_node, Car21
-        #     temp_isolation = remain_od.Car21.sum()
-        #     isolation.extend(remain_od.to_numpy().tolist())
-        #     logging.info(
-        #         f"Stop: {percentage_sumod*100}% of flows have been allocated with "
-        #         f"{temp_isolation} extra isolated flows."
-        #     )
-        #     break
+        if percentage_sumod >= 0.99:
+            # origin_node, destination_node, Car21
+            temp_isolation = remain_od.Car21.sum()
+            isolation.extend(remain_od.to_numpy().tolist())
+            logging.info(
+                f"Stop: {percentage_sumod*100}% of flows have been allocated with "
+                f"{temp_isolation} extra isolated flows."
+            )
+            break
 
         if iter_flag > 5:
             # temp_isolation = remain_od.Car21.sum()
