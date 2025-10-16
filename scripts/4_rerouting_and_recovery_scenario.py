@@ -140,7 +140,7 @@ def main(
     # Recovery analysis loop
     cDict = {}
     logging.info(f"Rerouting Analysis on Scenario-{scenario_idx}...")
-    event_day = conditions[scenario_idx] == 1
+    event_day = conditions[scenario_idx]
     # update edge capacities
     logging.info("Updating edge capacities...")
     road_links["acc_capacity"] = road_links["current_capacity"]
@@ -166,56 +166,94 @@ def main(
         ),
         axis=1,
     )
-    # Calculate disrupted flows of each OD pair
-    logging.info("Preparing disrupted OD matrix...")
-    acc_capacity_dict = road_links.set_index("e_id")["acc_capacity"].to_dict()
+    # Update the disrupted OD paths
+    logging.info("Preparing the disrupted OD matrix...")
     disrupted_od = od_path_file[
         od_path_file["disrupted_links"].apply(lambda x: len(x)) > 0
     ].reset_index(drop=True)
 
     # conduct exploded chunks
-    num_of_chunks = 100
-    chunk_size = len(disrupted_od) // num_of_chunks
+    num_of_chunks = 100  # this depends on how big the disrupted od matrix would be
+    chunk_size = min(len(disrupted_od) // num_of_chunks, len(disrupted_od))
     out_chunks = []
     for start in tqdm(
-        range(0, len(disrupted_od), chunk_size), desc="Processing chunks", unit="chunk"
+        range(0, len(disrupted_od), chunk_size),
+        desc="Processing chunks",
+        unit="chunk",
     ):
         chunk = disrupted_od.iloc[start : start + chunk_size].copy()
         chunk = chunk.explode("disrupted_links")
-        chunk["capacities_of_disrupted_links"] = chunk["disrupted_links"].map(
-            acc_capacity_dict
+        chunk = chunk.merge(
+            road_links[["e_id", "current_flow", "acc_capacity"]],
+            how="left",
+            left_on="disrupted_links",
+            right_on="e_id",
+        )
+        chunk["fraction"] = (
+            (chunk["acc_capacity"] / chunk["current_flow"].replace(0, np.nan))
+            .clip(upper=1.0)
+            .fillna(1.0)
+        )
+        chunk.path = chunk.path.apply(tuple)
+        chunk = (
+            chunk.groupby(
+                [
+                    "origin_node",
+                    "destination_node",
+                    "path",
+                    "flow",
+                    "time_cost_per_flow",
+                    "operating_cost_per_flow",
+                    "toll_cost_per_flow",
+                ],
+                as_index=False,
+            )["fraction"]
+            .min()
+            .reset_index(drop=True)
         )
         out_chunks.append(chunk)
-    disrupted_od = pd.concat(out_chunks, ignore_index=True)
 
+    disrupted_od = pd.concat(out_chunks, ignore_index=True)
     disrupted_od.path = disrupted_od.path.apply(tuple)
-    disrupted_od = disrupted_od.groupby(
-        by=[
-            "origin_node",
-            "destination_node",
-            "path",
-            "flow",
-            "operating_cost_per_flow",
-            "time_cost_per_flow",
-            "toll_cost_per_flow",
-        ],
-        as_index=False,
-    ).agg(
-        {
-            "capacities_of_disrupted_links": "min",
-        }
+    disrupted_od = (
+        disrupted_od.groupby(
+            [
+                "origin_node",
+                "destination_node",
+                "path",
+                "flow",
+                "time_cost_per_flow",
+                "operating_cost_per_flow",
+                "toll_cost_per_flow",
+            ],
+            as_index=False,
+        )["fraction"]
+        .min()
+        .reset_index(drop=True)
     )
     disrupted_od.path = disrupted_od.path.apply(list)
-    disrupted_od["disrupted_flow"] = np.maximum(
-        0,
-        disrupted_od["flow"] - disrupted_od["capacities_of_disrupted_links"],
+    disrupted_od["disrupted_flow"] = disrupted_od["flow"] * (
+        1 - disrupted_od["fraction"]
     )
     logging.info(f"The total disrupted flows: {disrupted_od.disrupted_flow.sum()}")
-
+    # disrupted_od.to_parquet(
+    #     base_path.parent
+    #     / "results"
+    #     / "rerouting_analysis"
+    #     / "test"
+    #     / "disrupted_od.pq"
+    # )
     # Restore capacity for non-disrupted roads
     disrupted_edge_flow = get_flow_on_edges(
         disrupted_od, "e_id", "path", "disrupted_flow"
     )  # redistribute those od back to road links
+    # disrupted_edge_flow.to_parquet(
+    #     base_path.parent
+    #     / "results"
+    #     / "rerouting_analysis"
+    #     / "test"
+    #     / "disrupted_edge_flow.pq"
+    # )
     road_links["disrupted_flow"] = 0.0
     road_links = road_links.set_index("e_id")
     road_links.update(disrupted_edge_flow.set_index("e_id")["disrupted_flow"])
@@ -231,11 +269,25 @@ def main(
 
     # initial key variables
     logging.info("Initialising key variables for flow modelling...")
+    disrupted_od.rename(
+        columns={"disrupted_flow": "Car21"}, inplace=True
+    )  # !!! make sure to pass disrupted flow for rerouting analysis
     road_links["acc_capacity"] = (
         road_links["acc_capacity"] + road_links["disrupted_flow"]
     )
-    road_links["acc_flow"] = road_links["current_flow"] - road_links["disrupted_flow"]
-    logging.info("Updating road speed limits...")
+    road_links["acc_flow"] = (
+        road_links["current_flow"] - road_links["disrupted_flow"]
+    ).clip(lower=0)
+    # road_links.to_parquet(
+    #     base_path.parent
+    #     / "results"
+    #     / "rerouting_analysis"
+    #     / "test"
+    #     / "road_links.gpq"
+    # )
+    # print("Complete debug!")
+    # sys.exit()
+    # logging.info("Updating road speed limits...")
     road_links["acc_speed"] = road_links.apply(
         lambda x: func.update_edge_speed(
             x["combined_label"],  # constant
@@ -246,8 +298,19 @@ def main(
         ),
         axis=1,
     )
-    if event_day:  # the occurance of damage
-        mask = road_links["damage_level_max"].isin(["extensive", "severe"])
+    if event_day == 1:  # apply speed constraint to every road
+        road_links["acc_speed"] = road_links[["acc_speed", "max_speed"]].min(axis=1)
+    if (
+        event_day == 2
+    ):  # only apply speed constraint to roads with flooddepth (2-6) meters
+        mask = (road_links["flood_depth_max"] >= 2) and (
+            road_links["flood_depth_max"] < 6
+        )
+        road_links.loc[mask, "acc_speed"] = road_links.loc[
+            mask, ["acc_speed", "max_speed"]
+        ].min(axis=1)
+    if event_day == 3:  # only for roads > 6 meters
+        mask = road_links["flood_depth_max"] >= 6
         road_links.loc[mask, "acc_speed"] = road_links.loc[
             mask, ["acc_speed", "max_speed"]
         ].min(axis=1)
@@ -260,7 +323,6 @@ def main(
     network, valid_road_links = func.create_igraph_network(valid_road_links)
 
     # run flow rerouting analysis
-    disrupted_od.rename(columns={"disrupted_flow": "Car21"}, inplace=True)
     logging.info("Running flow simulation...")
     (
         valid_road_links,

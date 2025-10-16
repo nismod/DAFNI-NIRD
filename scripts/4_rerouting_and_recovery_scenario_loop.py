@@ -35,12 +35,7 @@ def bridge_recovery(
     pre_event_capacity: float,
     acc_capacity: float,
     bridge_recovery_dict: Dict,
-    # event_day: bool,
 ) -> float:
-    # if event_day:
-    #     if damage_level in ["extensive", "severe"]:
-    #         acc_capacity = 0
-    # else:
     if damage_level != "no":  # minor, moderate, extensive, severe
         recovery_rate = bridge_recovery_dict.get(damage_level, [])[day]
         acc_capacity = pre_event_capacity * recovery_rate
@@ -53,12 +48,7 @@ def ordinary_road_recovery(
     pre_event_capacity: float,
     acc_capacity: float,
     road_recovery_dict: Dict,
-    # event_day: bool,
 ) -> float:
-    #     if event_day:  # the occurance of damage
-    #         if damage_level in ["extensive", "severe"]:
-    #             acc_capacity = 0
-    # else:
     if damage_level != "no":  # minor, moderate, extensive, severe
         recovery_rate = road_recovery_dict.get(damage_level, [])[day]
         acc_capacity = pre_event_capacity * recovery_rate
@@ -150,10 +140,8 @@ def main(
     # Recovery analysis loop
     cDict = {}
     for scenario_idx in range(len(scenarios)):  # 0-8
-        # if scenario_idx not in [7, 8, 9, 10]:
-        #     continue
         logging.info(f"Rerouting Analysis on Scenario-{scenario_idx}...")
-        event_day = conditions[scenario_idx] == 1
+        event_day = conditions[scenario_idx]
         # update edge capacities after recovery
         logging.info(f"Updating edge capacities on D-{scenario_idx}...")
         road_links["acc_capacity"] = road_links["current_capacity"]
@@ -165,7 +153,6 @@ def main(
                     row["current_capacity"],
                     row["acc_capacity"],
                     bridge_recovery_dict,
-                    # event_day,
                 )
                 if row["road_label"] == "bridge"
                 else (
@@ -175,7 +162,6 @@ def main(
                         row["current_capacity"],
                         row["acc_capacity"],
                         road_recovery_dict,
-                        # event_day,
                     )
                 )
             ),
@@ -184,15 +170,13 @@ def main(
 
         # Update the disrupted OD paths
         logging.info("Preparing the disrupted OD matrix...")
-        # acc_capacity_dict = road_links.set_index("e_id")["acc_capacity"].to_dict()
-        # current_flow_dict = road_links.set_index("e_id")["current_flow"].to_dict()
         disrupted_od = od_path_file[
             od_path_file["disrupted_links"].apply(lambda x: len(x)) > 0
         ].reset_index(drop=True)
 
         # conduct exploded chunks
-        num_of_chunks = 100
-        chunk_size = len(disrupted_od) // num_of_chunks
+        num_of_chunks = 100  # this depends on how big the disrupted od matrix would be
+        chunk_size = min(len(disrupted_od) // num_of_chunks, len(disrupted_od))
         out_chunks = []
         for start in tqdm(
             range(0, len(disrupted_od), chunk_size),
@@ -316,8 +300,19 @@ def main(
             ),
             axis=1,
         )
-        if event_day:
-            mask = road_links["damage_level_max"].isin(["extensive", "severe"])
+        if event_day == 1:  # apply speed constraint to every road
+            road_links["acc_speed"] = road_links[["acc_speed", "max_speed"]].min(axis=1)
+        if (
+            event_day == 2
+        ):  # only apply speed constraint to roads with flooddepth (2-6) meters
+            mask = (road_links["flood_depth_max"] >= 2) and (
+                road_links["flood_depth_max"] < 6
+            )
+            road_links.loc[mask, "acc_speed"] = road_links.loc[
+                mask, ["acc_speed", "max_speed"]
+            ].min(axis=1)
+        if event_day == 3:  # only for roads > 6 meters
+            mask = road_links["flood_depth_max"] >= 6
             road_links.loc[mask, "acc_speed"] = road_links.loc[
                 mask, ["acc_speed", "max_speed"]
             ].min(axis=1)
