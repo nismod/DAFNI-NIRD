@@ -660,13 +660,20 @@ def itter_path(
     network,
     road_links,
     temp_flow_matrix: pd.DataFrame,
-    chunk_size: int = None,
+    num_of_chunk: int = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Iterate through all the paths to calculate edge flows and travel costs."""
-    if chunk_size is None:
-        chunk_size = len(temp_flow_matrix)  # default = process all at once
+    max_chunk_size = 100_000
+    if max_chunk_size > len(temp_flow_matrix):
+        chunk_size = len(temp_flow_matrix)
+    else:
+        num_of_chunk = min(
+            num_of_chunk, max(1, len(temp_flow_matrix) // max_chunk_size)
+        )
+        chunk_size = len(temp_flow_matrix) // num_of_chunk
+    print(f"temp_flow_matrix size: {len(temp_flow_matrix)}")
+    print(f"chunk_size: {chunk_size}")
 
-    chunk_size = min(chunk_size, len(temp_flow_matrix))
     edges = network.es
     edges_df = pd.DataFrame(
         {

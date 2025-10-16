@@ -175,8 +175,15 @@ def main(
         ].reset_index(drop=True)
 
         # conduct exploded chunks
-        num_of_chunks = 100  # this depends on how big the disrupted od matrix would be
-        chunk_size = min(len(disrupted_od) // num_of_chunks, len(disrupted_od))
+        max_chunk_size = 100_000
+        if max_chunk_size > len(disrupted_od):
+            chunk_size = len(disrupted_od)
+        else:
+            n_chunk = min(100, max(1, len(disrupted_od) // max_chunk_size))
+            chunk_size = len(disrupted_od) // n_chunk
+        print(f"disrupted_od size: {len(disrupted_od)}")
+        print(f"chunk_size: {chunk_size}")
+
         out_chunks = []
         for start in tqdm(
             range(0, len(disrupted_od), chunk_size),
