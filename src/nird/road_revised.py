@@ -663,7 +663,7 @@ def itter_path(
     num_of_chunk: int = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Iterate through all the paths to calculate edge flows and travel costs."""
-    max_chunk_size = 100_000
+    max_chunk_size = 10_000  # 97G
     if max_chunk_size > len(temp_flow_matrix):
         chunk_size = len(temp_flow_matrix)
     else:
@@ -724,11 +724,9 @@ def itter_path(
 
         # edge flows
         edge_flows.append(
-            chunk.groupby("e_idx")
+            chunk.groupby(by=["e_idx", "origin", "destination"])
             .agg(
                 {
-                    "origin": "first",
-                    "destination": "first",
                     "acc_capacity": "first",
                     "flow": "sum",
                 }
@@ -737,19 +735,10 @@ def itter_path(
         )
 
     temp_flow_matrix = pd.concat(od_results, ignore_index=True)
-    temp_edge_flow = (
-        pd.concat(edge_flows, ignore_index=True)
-        .groupby("e_idx")
-        .agg(
-            {
-                "origin": "first",
-                "destination": "first",
-                "acc_capacity": "first",
-                "flow": "sum",
-            }
-        )
-        .reset_index()
-    )  # e_idx: flow
+    temp_edge_flow = pd.concat(edge_flows, ignore_index=True)
+    sum_f = temp_edge_flow.groupby("e_idx")["flow"].sum()
+    temp_edge_flow["flow"] = temp_edge_flow["e_idx"].map(sum_f)
+
     temp_edge_flow["adjust_r"] = (
         (temp_edge_flow["acc_capacity"] / temp_edge_flow["flow"].replace(0, np.nan))
         .clip(upper=1.0)
@@ -965,7 +954,7 @@ def network_flow_model(
         if iter_flag <= 5:
             # temp_flow_matrix["flow"] *= min(r, 1.0)
             temp_flow_matrix = temp_flow_matrix.merge(
-                od_adjustment, on=["origin", "destination"]
+                od_adjustment, on=["origin", "destination"], how="left"
             )
             temp_flow_matrix["flow"] = (
                 temp_flow_matrix["flow"] * temp_flow_matrix["adjust_r"]
