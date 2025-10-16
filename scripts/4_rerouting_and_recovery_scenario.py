@@ -13,7 +13,9 @@ import pandas as pd
 from tqdm import tqdm
 from collections import defaultdict
 
-import nird.road_revised as func
+import nird.road_recovery as func
+
+# import nird.road_revised as func
 from nird.utils import load_config, get_flow_on_edges
 
 warnings.simplefilter("ignore")
@@ -229,7 +231,6 @@ def main(
 
     # initial key variables
     logging.info("Initialising key variables for flow modelling...")
-    disrupted_od.rename(columns={"disrupted_flow": "Car21"}, inplace=True)
     road_links["acc_capacity"] = (
         road_links["acc_capacity"] + road_links["disrupted_flow"]
     )
@@ -259,6 +260,7 @@ def main(
     network, valid_road_links = func.create_igraph_network(valid_road_links)
 
     # run flow rerouting analysis
+    disrupted_od.rename(columns={"disrupted_flow": "Car21"}, inplace=True)
     logging.info("Running flow simulation...")
     (
         valid_road_links,
@@ -320,6 +322,11 @@ def main(
             "Car21",
         ],
     )
+    isolation_df = isolation_df[
+        (isolation_df.origin_node != isolation_df.destination_node)
+        & (isolation_df.Car21 > 0)
+    ].reset_index()
+
     isolation_df.to_csv(
         out_path / f"trip_isolations_{scenario_idx}.csv",
         index=False,
