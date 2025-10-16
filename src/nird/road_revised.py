@@ -694,7 +694,10 @@ def itter_path(
             }
         )
         chunk = chunk.merge(
-            road_links[["e_idx", "acc_capacity"]], on="e_idx", how="left"
+            road_links[["e_idx", "acc_capacity"]],
+            left_on="path",
+            right_on="e_idx",
+            how="left",
         )
         # aggregate OD results
         od_results.append(
@@ -712,7 +715,7 @@ def itter_path(
 
         # edge flows
         edge_flows.append(
-            chunk.groupby("path")
+            chunk.groupby("e_idx")
             .agg(
                 {
                     "origin": "first",
@@ -722,13 +725,12 @@ def itter_path(
                 }
             )
             .reset_index()
-            .rename(columns={"path": "e_idx"})
         )
 
     temp_flow_matrix = pd.concat(od_results, ignore_index=True)
     temp_edge_flow = (
         pd.concat(edge_flows, ignore_index=True)
-        .groupby("e_idx")["flow"]
+        .groupby("e_idx")
         .agg(
             {
                 "origin": "first",
@@ -929,6 +931,7 @@ def network_flow_model(
             temp_flow_matrix,
         ) = itter_path(
             network,
+            road_links,
             temp_flow_matrix,
             chunk_size=int(len(temp_flow_matrix)) // num_of_chunk,
         )
@@ -1006,8 +1009,12 @@ def network_flow_model(
         # %%
         # estimate total travel costs:
         # [origin_node_id, destination_node_id,
-        # path(edge_idx), path(edge_id), flow, fuel, time, toll]
-        odpfc.extend(temp_flow_matrix.to_numpy().tolist())
+        # path(edge_idx), edge_id, flow, fuel, time, toll, adjust_r]
+        # odpfc.extend(temp_flow_matrix.to_numpy().tolist())
+        odpfc.extend(
+            temp_flow_matrix.drop(columns=["path", "adjust_r"]).to_numpy().tolist()
+        )
+        # path: list of edge index (1,2,3...), adjust_r: list of flow adjustment ratios
         cost_fuel += (
             temp_flow_matrix["flow"] * temp_flow_matrix["operating_cost_per_flow"]
         ).sum()
