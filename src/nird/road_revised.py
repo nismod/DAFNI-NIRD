@@ -665,6 +665,11 @@ def itter_path(
     """Iterate through all the paths to calculate edge flows and travel costs."""
     if chunk_size is None:
         chunk_size = len(temp_flow_matrix)  # default = process all at once
+
+    chunk_size = min(
+        chunk_size, len(temp_flow_matrix)
+    )  # if chunk size is larger than the datasize
+
     edges = network.es
     edges_df = pd.DataFrame(
         {
