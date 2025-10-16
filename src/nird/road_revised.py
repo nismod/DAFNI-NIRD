@@ -476,9 +476,11 @@ def update_network_structure(
     The updated igraph network
     """
     # update the remaining capacity
-    road_links_valid = road_links.dropna(subset= ["e_idx"]).set_index("e_idx")
+    road_links_valid = road_links.dropna(subset=["e_idx"]).set_index("e_idx")
+    print(f"#road_links: {len(road_links)}, #valid_links: {len(road_links_valid)}")
+
     temp_edge_flow = temp_edge_flow.set_index("e_idx")
-    temp_edge_flow["acc_capacity"].update(road_links["acc_capacity"])
+    temp_edge_flow["acc_capacity"].update(road_links_valid["acc_capacity"])
     temp_edge_flow.reset_index(inplace=True)
 
     # drop fully utilised edges from the network
@@ -493,7 +495,7 @@ def update_network_structure(
     logging.info(f"The remaining number of edges in the network: {num_of_edges_update}")
 
     # update edges' weights
-    remaining_edges = network.es["e_id"]
+    # remaining_edges = network.es["e_id"]
     # graph_df = road_links[road_links.e_id.isin(remaining_edges)][
     #     [
     #         "from_id",
@@ -513,7 +515,7 @@ def update_network_structure(
     # )
     # convert edge_id to edge_idx as per network edges
     index_map = {eid: idx for idx, eid in enumerate(network.es["e_id"])}
-    road_links["e_idx"] = road_links["e_id"].map(index_map) # return nan if empty
+    road_links["e_idx"] = road_links["e_id"].map(index_map)  # return nan if empty
 
     return network, road_links
 
@@ -964,7 +966,7 @@ def network_flow_model(
             lower=0
         )  # non-negative
         remain_od = merged.reset_index()[["origin_node", "destination_node", "Car21"]]
-        remain_od.Car21 = remain_od.Car21.apply(np.floor)
+        # remain_od.Car21 = remain_od.Car21.apply(np.floor)
         remain_od = remain_od[remain_od.Car21 > 0].reset_index(drop=True)
 
         total_remain = remain_od["Car21"].sum()
