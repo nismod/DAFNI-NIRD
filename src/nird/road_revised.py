@@ -983,9 +983,9 @@ def network_flow_model(
 
         # %%
         # update road link attributes (acc_flow, acc_capacity, acc_speed)
-        # if iter_flag <= 5:
-        #     temp_edge_flow["flow"] = temp_edge_flow["flow"] * min(r, 1.0)
-        # temp_edge_flow["flow"] = temp_edge_flow["flow"].apply(np.ceil)
+        if iter_flag <= 5:
+            temp_edge_flow["flow"] = temp_edge_flow["flow"] * temp_edge_flow["adjust_r"]
+        temp_edge_flow["flow"] = temp_edge_flow["flow"].apply(int)
         road_links = road_links.merge(
             temp_edge_flow[["e_idx", "flow"]], on="e_idx", how="left"
         )

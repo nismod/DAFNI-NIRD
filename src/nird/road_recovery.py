@@ -658,6 +658,7 @@ def worker_init_path(
 
 def itter_path(
     network,
+    road_links,
     temp_flow_matrix: pd.DataFrame,
     chunk_size: int = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -673,7 +674,9 @@ def itter_path(
             "operating_cost": edges["operating_cost"],
             "average_toll_cost": edges["average_toll_cost"],
         }
-    ).set_index("path")
+    ).set_index(
+        "path"
+    )  # network attributes
 
     edge_flows = []
     od_results = []
@@ -690,6 +693,12 @@ def itter_path(
                 "average_toll_cost": "toll_cost_per_flow",
             }
         )
+        chunk = chunk.merge(
+            road_links[["e_idx", "acc_capacity"]],
+            left_on="path",
+            right_on="e_idx",
+            how="left",
+        )
         # aggregate OD results
         od_results.append(
             chunk.groupby(["origin", "destination"], as_index=False).agg(
@@ -703,22 +712,40 @@ def itter_path(
                 }
             )
         )
+
         # edge flows
         edge_flows.append(
-            chunk.groupby("path")["flow"]
-            .sum()
+            chunk.groupby("e_idx")
+            .agg(
+                {
+                    "origin": "first",
+                    "destination": "first",
+                    "acc_capacity": "first",
+                    "flow": "sum",
+                }
+            )
             .reset_index()
-            .rename(columns={"path": "e_idx"})
         )
 
     temp_flow_matrix = pd.concat(od_results, ignore_index=True)
     temp_edge_flow = (
         pd.concat(edge_flows, ignore_index=True)
-        .groupby("e_idx")["flow"]
-        .sum()
+        .groupby("e_idx")
+        .agg(
+            {
+                "origin": "first",
+                "destination": "first",
+                "acc_capacity": "first",
+                "flow": "sum",
+            }
+        )
         .reset_index()
+    )  # e_idx: flow
+    temp_edge_flow["adjust_r"] = (
+        (temp_edge_flow["acc_capacity"] / temp_edge_flow["flow"].replace(0, np.nan))
+        .clip(upper=1.0)
+        .fillna(1.0)
     )
-
     return (temp_edge_flow, temp_flow_matrix)
 
 
@@ -899,58 +926,41 @@ def network_flow_model(
         # calculate edge flows -> [e_idx, flow]
         # and attach cost matrix (fuel, time, toll) to temp_flow_matrix
         logging.info("Calculating edge flows...")
-        # number_of_chunks = 100 # user-defined parameter: memory vs speed
         (
             temp_edge_flow,
             temp_flow_matrix,
         ) = itter_path(
             network,
+            road_links,
             temp_flow_matrix,
             chunk_size=int(len(temp_flow_matrix)) // num_of_chunk,
         )
 
-        # # check point2: revise to parallel processing
-        # chunks = chunk_df(temp_flow_matrix, n_chunks=num_of_cpu)
-        # logging.info(
-        #     f"Created {len(chunks)} chunks from {len(temp_flow_matrix)} rows "
-        #     f"for parallel processing with {num_of_cpu} CPUs."
-        # )
-        # st = time.time()
-        # logging.info("Calculating o-d-path costs...")
-        # temp_flow_matrix_list = []
-        # with Pool(
-        #     processes=num_of_cpu,
-        #     initializer=worker_init_path,
-        #     initargs=(shared_network_pkl,),
-        # ) as pool:
-        #     for i, flow_matrices in enumerate(
-        #         pool.imap_unordered(calculate_path, chunks)
-        #     ):
-        #         temp_flow_matrix_list.append(flow_matrices)
-        #         if i % 10_000 == 0:
-        #             logging.info(
-        #                 f"Completed {i} of {len(chunks)}, {100 * i / len(chunks):.2f}%"
-        #             )
-        # logging.info(f"Path attributes retrieval time: {time.time() - st}.")
-        # temp_flow_matrix = pd.concat(temp_flow_matrix_list, ignore_index=True)
-
-        # logging.info("Calculating edge flows...")
-        # temp_edge_flow = get_flow_on_edges(temp_flow_matrix, "e_idx", "path", "flow")
-
-        # should first check overflows
         # compare the remaining capacity and to-be-allocated flows
-        temp_edge_flow = temp_edge_flow.merge(
-            road_links[["e_idx", "acc_capacity"]], on="e_idx", how="left"
+        # temp_edge_flow = temp_edge_flow.merge(
+        #     road_links[["e_idx", "acc_capacity"]], on="e_idx", how="left"
+        # )
+        # r = (
+        #     temp_edge_flow["acc_capacity"] / temp_edge_flow["flow"].replace(0, np.nan)
+        # ).min(skipna=True)
+        od_adjustment = (
+            temp_edge_flow.groupby(by=["origin", "destination"])["adjust_r"]
+            .min()
+            .reset_index()
         )
-        r = (
-            temp_edge_flow["acc_capacity"] / temp_edge_flow["flow"].replace(0, np.nan)
-        ).min(skipna=True)
+        r = od_adjustment["adjust_r"].min()
         logging.info(f"The minimum r value is: {r}.")
 
         # %%
         # use this r to adjust temp_flow_matrix and the remain_od matrix
-        temp_flow_matrix["flow"] *= min(r, 1.0)
-        temp_flow_matrix["flow"] = temp_flow_matrix.flow.apply(np.ceil)
+        # if iter_flag <= 5:
+        temp_flow_matrix = temp_flow_matrix.merge(
+            od_adjustment, on=["origin", "destination"]
+        )
+        temp_flow_matrix["flow"] = (
+            temp_flow_matrix["flow"] * temp_flow_matrix["adjust_r"]
+        )
+        temp_flow_matrix["flow"] = temp_flow_matrix.flow.apply(int)  # floor
 
         assigned_sumod += temp_flow_matrix["flow"].sum()
         percentage_sumod = assigned_sumod / initial_sumod
@@ -965,7 +975,6 @@ def network_flow_model(
             lower=0
         )  # non-negative
         remain_od = merged.reset_index()[["origin_node", "destination_node", "Car21"]]
-        # remain_od.Car21 = remain_od.Car21.apply(np.floor)
         remain_od = remain_od[remain_od.Car21 > 0].reset_index(drop=True)
 
         total_remain = remain_od["Car21"].sum()
@@ -973,9 +982,8 @@ def network_flow_model(
 
         # %%
         # update road link attributes (acc_flow, acc_capacity, acc_speed)
-        temp_edge_flow["flow"] = temp_edge_flow["flow"] * min(r, 1.0)
-        temp_edge_flow["flow"] = temp_edge_flow["flow"].apply(np.ceil)
-
+        temp_edge_flow["flow"] = temp_edge_flow["flow"] * temp_edge_flow["adjust_r"]
+        temp_edge_flow["flow"] = temp_edge_flow["flow"].apply(int)
         road_links = road_links.merge(
             temp_edge_flow[["e_idx", "flow"]], on="e_idx", how="left"
         )
@@ -999,8 +1007,12 @@ def network_flow_model(
         # %%
         # estimate total travel costs:
         # [origin_node_id, destination_node_id,
-        # path(edge_idx), path(edge_id), flow, fuel, time, toll]
-        odpfc.extend(temp_flow_matrix.to_numpy().tolist())
+        # path(edge_idx), edge_id, flow, fuel, time, toll, adjust_r]
+        # odpfc.extend(temp_flow_matrix.to_numpy().tolist())
+        odpfc.extend(
+            temp_flow_matrix.drop(columns=["path", "adjust_r"]).to_numpy().tolist()
+        )
+        # path: list of edge index (1,2,3...), adjust_r: list of flow adjustment ratios
         cost_fuel += (
             temp_flow_matrix["flow"] * temp_flow_matrix["operating_cost_per_flow"]
         ).sum()
