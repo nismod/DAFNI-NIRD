@@ -120,3 +120,4 @@ test_outputs
 *.out
 *.csv
 *.png
+_plottings*
