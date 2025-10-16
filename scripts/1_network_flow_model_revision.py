@@ -121,7 +121,6 @@ def main(
         columns=[
             "origin_node",
             "destination_node",
-            "path_idx",
             "path",
             "flow",
             "operating_cost_per_flow",
@@ -129,7 +128,6 @@ def main(
             "toll_cost_per_flow",
         ],
     )
-    odpfc_df.drop(columns=["path_idx"], inplace=True)
     odpfc_df.path = odpfc_df.path.apply(tuple)
     odpfc_df = odpfc_df.groupby(
         by=["origin_node", "destination_node", "path"], as_index=False
