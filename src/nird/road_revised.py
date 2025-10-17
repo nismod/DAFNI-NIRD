@@ -730,16 +730,22 @@ def itter_path(
         del chunk, od_df, edge_df
 
     logging.info("All chunks processed. Aggregating final results...")
-    # temp_flow_matrix = pd.concat(od_results, ignore_index=True)
-    # temp_edge_flow = pd.concat(edge_flows, ignore_index=True)
-    # sum_f = temp_edge_flow.groupby("e_idx")["flow"].sum()
-    # temp_edge_flow["flow"] = temp_edge_flow["e_idx"].map(sum_f)
-    # temp_edge_flow["adjust_r"] = (
-    #     (temp_edge_flow["acc_capacity"] / temp_edge_flow["flow"].replace(0, np.nan))
-    #     .clip(upper=1.0)
-    #     .fillna(1.0)
-    # )
+
+    # edge flows
     temp_edge_flow = conn.sql(
+        """
+        SELECT
+            e_idx,
+            FIRST(acc_capacity) AS acc_capacity,
+            SUM(flow) AS flow,
+            COALESCE(LEAST(FIRST(acc_capacity) / NULLIF(SUM(flow), 0), 1.0), 1.0) AS adjust_r
+        FROM edge_flows
+        GROUP BY e_idx
+        """
+    ).df()
+
+    # od results
+    temp_flow_matrix = conn.sql(
         """
         WITH base AS (
             SELECT
@@ -757,27 +763,27 @@ def itter_path(
                 SUM(flow) AS total_flow
             FROM base
             GROUP BY e_idx
+        ),
+        od_adjustment AS (
+            SELECT
+                b.origin,
+                b.destination,
+                MIN(LEAST(b.acc_capacity / NULLIF(t.total_flow, 0), 1.0)) AS adjust_r
+            FROM base b
+            JOIN total t USING (e_idx)
+            GROUP BY b.origin, b.destination
         )
         SELECT
-            b.e_idx,
-            b.origin,
-            b.destination,
-            b.acc_capacity,
-            t.total_flow AS flow
-        FROM base b
-        JOIN total t USING (e_idx)
+            o.*,
+            a.adjust_r
+        FROM od_results o
+        LEFT JOIN od_adjustment a
+        USING (origin, destination)
     """
     ).df()
 
-    temp_edge_flow["adjust_r"] = (
-        (temp_edge_flow["acc_capacity"] / temp_edge_flow["flow"].replace(0, np.nan))
-        .clip(upper=1.0)
-        .fillna(1.0)
-    )
-    temp_flow_matrix = conn.sql("SELECT * FROM od_results").df()
     conn.close()
     logging.info("Complete itter_path function with Duckdb!")
-
     return (temp_edge_flow, temp_flow_matrix)
 
 
@@ -967,22 +973,12 @@ def network_flow_model(
             temp_flow_matrix,
             num_of_chunk=num_of_chunk,
         )
-        # compute flow adjustment ratio r for estimate to-be-allocate flows
-        od_adjustment = (
-            temp_edge_flow.groupby(by=["origin", "destination"])["adjust_r"]
-            .min()
-            .reset_index()
-        )
-        r = od_adjustment["adjust_r"].min()
+        r = temp_flow_matrix["adjust_r"].min()
         logging.info(f"The minimum r value is: {r}.")
 
         # %%
         # use this r to adjust temp_flow_matrix and the remain_od matrix
         if iter_flag <= 5:
-            # temp_flow_matrix["flow"] *= min(r, 1.0)
-            temp_flow_matrix = temp_flow_matrix.merge(
-                od_adjustment, on=["origin", "destination"], how="left"
-            )
             temp_flow_matrix["flow"] = (
                 temp_flow_matrix["flow"] * temp_flow_matrix["adjust_r"]
             )
