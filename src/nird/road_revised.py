@@ -19,7 +19,7 @@ from tqdm import tqdm
 
 # Local
 import nird.constants as cons
-import duckbd
+import duckdb
 
 warnings.simplefilter("ignore")
 tqdm.pandas()
@@ -476,7 +476,9 @@ def update_network_structure(
     """
     # update the remaining capacity
     road_links_valid = road_links.dropna(subset=["e_idx"]).set_index("e_idx")
-    logging.info(f"#road_links: {len(road_links)}, #valid_links: {len(road_links_valid)}")
+    logging.info(
+        f"#road_links: {len(road_links)}, #valid_links: {len(road_links_valid)}"
+    )
 
     temp_edge_flow = temp_edge_flow.set_index("e_idx")
     temp_edge_flow["acc_capacity"].update(road_links_valid["acc_capacity"])
@@ -641,7 +643,7 @@ def itter_path(
     road_links,
     temp_flow_matrix: pd.DataFrame,
     num_of_chunk: int = None,
-    db_path: str = "results.duckdb"
+    db_path: str = "results.duckdb",
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Iterate through all the paths to calculate edge flows and travel costs."""
     max_chunk_size = 100_000  # 97G
@@ -668,12 +670,11 @@ def itter_path(
         "path"
     )  # network attributes
 
-
     conn = duckdb.connect(db_path)
     conn.execute("DROP TABLE IF EXISTS od_results")
     conn.execute("DROP TABLE IF EXISTS edge_flows")
-    # od_results = []
-    # edge_flows = []
+
+    first = True
     for start in tqdm(
         range(0, len(temp_flow_matrix), chunk_size),
         desc="Processing chunks:",
@@ -694,20 +695,21 @@ def itter_path(
             how="left",
         )
         # aggregate OD results
-        od_df.append(
-            chunk.groupby(["origin", "destination"], as_index=False).agg(
-                {
-                    "path": list,
-                    "edge_id": list,
-                    "flow": "first",
-                    "operating_cost_per_flow": "sum",
-                    "time_cost_per_flow": "sum",
-                    "toll_cost_per_flow": "sum",
-                }
-            )
+        od_df = chunk.groupby(["origin", "destination"], as_index=False).agg(
+            {
+                "path": list,
+                "edge_id": list,
+                "flow": "first",
+                "operating_cost_per_flow": "sum",
+                "time_cost_per_flow": "sum",
+                "toll_cost_per_flow": "sum",
+            }
         )
+        # od_df["path"] = od_df["path"].apply(json.dumps)
+        # od_df["edge_id"] = od_df["edge_id"].apply(json.dumps)
+
         # edge flows
-        edge_df.append(
+        edge_df = (
             chunk.groupby(by=["e_idx", "origin", "destination"])
             .agg(
                 {
@@ -717,8 +719,16 @@ def itter_path(
             )
             .reset_index()
         )
-        conn.append("od_results", od_df)
-        conn.append("edge_flows", edge_df)
+        if first:
+            conn.register("od_df", od_df)
+            conn.execute("CREATE TABLE od_results AS SELECT * FROM od_df")
+            conn.register("edge_df", edge_df)
+            conn.execute("CREATE TABLE edge_flows AS SELECT * FROM edge_df")
+            first = False
+        else:
+            conn.append("od_results", od_df)
+            conn.append("edge_flows", edge_df)
+
         logging.info(f"Processed chunk {start // chunk_size +1}")
 
         del chunk, od_df, edge_df
@@ -733,14 +743,36 @@ def itter_path(
     #     .clip(upper=1.0)
     #     .fillna(1.0)
     # )
-    temp_edge_flow = conn.sql("""
+    temp_edge_flow = conn.sql(
+        """
+        WITH base AS (
+            SELECT
+                e_idx,
+                origin,
+                destination,
+                MAX(acc_capacity) AS acc_capacity,
+                SUM(flow) AS flow
+            FROM edge_flows
+            GROUP BY e_idx, origin, destination
+        ),
+        total AS (
+            SELECT
+                e_idx,
+                SUM(flow) AS total_flow
+            FROM base
+            GROUP BY e_idx
+        )
         SELECT
-            e_idx,
-            acc_capacity,
-            SUM(flow) AS flow
-        FROM edge_flows
-        GROUP BY e_idx, acc_capacity
-    """).df()
+            b.e_idx,
+            b.origin,
+            b.destination,
+            b.acc_capacity,
+            t.total_flow AS flow
+        FROM base b
+        JOIN total t USING (e_idx)
+    """
+    ).df()
+
     temp_edge_flow["adjust_r"] = (
         (temp_edge_flow["acc_capacity"] / temp_edge_flow["flow"].replace(0, np.nan))
         .clip(upper=1.0)
@@ -748,7 +780,7 @@ def itter_path(
     )
     temp_flow_matrix = conn.sql("SELECT * FROM od_results").df()
     conn.close()
-    logging.info(f"Complete itter_path function!")
+    logging.info("Complete itter_path function with Duckdb!")
 
     return (temp_edge_flow, temp_flow_matrix)
 
