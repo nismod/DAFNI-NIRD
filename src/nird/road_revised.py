@@ -19,8 +19,7 @@ from tqdm import tqdm
 
 # Local
 import nird.constants as cons
-
-# from nird.utils import get_flow_on_edges
+import duckbd
 
 warnings.simplefilter("ignore")
 tqdm.pandas()
@@ -477,7 +476,7 @@ def update_network_structure(
     """
     # update the remaining capacity
     road_links_valid = road_links.dropna(subset=["e_idx"]).set_index("e_idx")
-    print(f"#road_links: {len(road_links)}, #valid_links: {len(road_links_valid)}")
+    logging.info(f"#road_links: {len(road_links)}, #valid_links: {len(road_links_valid)}")
 
     temp_edge_flow = temp_edge_flow.set_index("e_idx")
     temp_edge_flow["acc_capacity"].update(road_links_valid["acc_capacity"])
@@ -494,25 +493,6 @@ def update_network_structure(
         return network, road_links
     logging.info(f"The remaining number of edges in the network: {num_of_edges_update}")
 
-    # update edges' weights
-    # remaining_edges = network.es["e_id"]
-    # graph_df = road_links[road_links.e_id.isin(remaining_edges)][
-    #     [
-    #         "from_id",
-    #         "to_id",
-    #         "e_id",
-    #         "weight",
-    #         "time_cost",
-    #         "operating_cost",
-    #         "average_toll_cost",
-    #     ]
-    # ].reset_index(drop=True)
-
-    # network = igraph.Graph.TupleList(
-    #     graph_df.itertuples(index=False),
-    #     edge_attrs=list(graph_df.columns)[2:],
-    #     directed=False,
-    # )
     # convert edge_id to edge_idx as per network edges
     index_map = {eid: idx for idx, eid in enumerate(network.es["e_id"])}
     road_links["e_idx"] = road_links["e_id"].map(index_map)  # return nan if empty
@@ -661,9 +641,10 @@ def itter_path(
     road_links,
     temp_flow_matrix: pd.DataFrame,
     num_of_chunk: int = None,
+    db_path: str = "results.duckdb"
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Iterate through all the paths to calculate edge flows and travel costs."""
-    max_chunk_size = 10_000  # 97G
+    max_chunk_size = 100_000  # 97G
     if max_chunk_size > len(temp_flow_matrix):
         chunk_size = len(temp_flow_matrix)
     else:
@@ -671,8 +652,8 @@ def itter_path(
             num_of_chunk, max(1, len(temp_flow_matrix) // max_chunk_size)
         )
         chunk_size = len(temp_flow_matrix) // num_of_chunk
-    print(f"temp_flow_matrix size: {len(temp_flow_matrix)}")
-    print(f"chunk_size: {chunk_size}")
+    logging.info(f"temp_flow_matrix size: {len(temp_flow_matrix)}")
+    logging.info(f"chunk_size: {chunk_size}")
 
     edges = network.es
     edges_df = pd.DataFrame(
@@ -687,8 +668,12 @@ def itter_path(
         "path"
     )  # network attributes
 
-    edge_flows = []
-    od_results = []
+
+    conn = duckdb.connect(db_path)
+    conn.execute("DROP TABLE IF EXISTS od_results")
+    conn.execute("DROP TABLE IF EXISTS edge_flows")
+    # od_results = []
+    # edge_flows = []
     for start in tqdm(
         range(0, len(temp_flow_matrix), chunk_size),
         desc="Processing chunks:",
@@ -709,7 +694,7 @@ def itter_path(
             how="left",
         )
         # aggregate OD results
-        od_results.append(
+        od_df.append(
             chunk.groupby(["origin", "destination"], as_index=False).agg(
                 {
                     "path": list,
@@ -721,9 +706,8 @@ def itter_path(
                 }
             )
         )
-
         # edge flows
-        edge_flows.append(
+        edge_df.append(
             chunk.groupby(by=["e_idx", "origin", "destination"])
             .agg(
                 {
@@ -733,17 +717,39 @@ def itter_path(
             )
             .reset_index()
         )
+        conn.append("od_results", od_df)
+        conn.append("edge_flows", edge_df)
+        logging.info(f"Processed chunk {start // chunk_size +1}")
 
-    temp_flow_matrix = pd.concat(od_results, ignore_index=True)
-    temp_edge_flow = pd.concat(edge_flows, ignore_index=True)
-    sum_f = temp_edge_flow.groupby("e_idx")["flow"].sum()
-    temp_edge_flow["flow"] = temp_edge_flow["e_idx"].map(sum_f)
+        del chunk, od_df, edge_df
 
+    logging.info("All chunks processed. Aggregating final results...")
+    # temp_flow_matrix = pd.concat(od_results, ignore_index=True)
+    # temp_edge_flow = pd.concat(edge_flows, ignore_index=True)
+    # sum_f = temp_edge_flow.groupby("e_idx")["flow"].sum()
+    # temp_edge_flow["flow"] = temp_edge_flow["e_idx"].map(sum_f)
+    # temp_edge_flow["adjust_r"] = (
+    #     (temp_edge_flow["acc_capacity"] / temp_edge_flow["flow"].replace(0, np.nan))
+    #     .clip(upper=1.0)
+    #     .fillna(1.0)
+    # )
+    temp_edge_flow = conn.sql("""
+        SELECT
+            e_idx,
+            acc_capacity,
+            SUM(flow) AS flow
+        FROM edge_flows
+        GROUP BY e_idx, acc_capacity
+    """).df()
     temp_edge_flow["adjust_r"] = (
         (temp_edge_flow["acc_capacity"] / temp_edge_flow["flow"].replace(0, np.nan))
         .clip(upper=1.0)
         .fillna(1.0)
     )
+    temp_flow_matrix = conn.sql("SELECT * FROM od_results").df()
+    conn.close()
+    logging.info(f"Complete itter_path function!")
+
     return (temp_edge_flow, temp_flow_matrix)
 
 
@@ -933,14 +939,7 @@ def network_flow_model(
             temp_flow_matrix,
             num_of_chunk=num_of_chunk,
         )
-
-        # compare the remaining capacity and to-be-allocated flows
-        # temp_edge_flow = temp_edge_flow.merge(
-        #     road_links[["e_idx", "acc_capacity"]], on="e_idx", how="left"
-        # )
-        # r = (
-        #     temp_edge_flow["acc_capacity"] / temp_edge_flow["flow"].replace(0, np.nan)
-        # ).min(skipna=True)
+        # compute flow adjustment ratio r for estimate to-be-allocate flows
         od_adjustment = (
             temp_edge_flow.groupby(by=["origin", "destination"])["adjust_r"]
             .min()
@@ -1008,7 +1007,6 @@ def network_flow_model(
         # estimate total travel costs:
         # [origin_node_id, destination_node_id,
         # path(edge_idx), edge_id, flow, fuel, time, toll, adjust_r]
-        # odpfc.extend(temp_flow_matrix.to_numpy().tolist())
         odpfc.extend(
             temp_flow_matrix.drop(columns=["path", "adjust_r"]).to_numpy().tolist()
         )
