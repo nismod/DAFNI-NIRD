@@ -705,8 +705,6 @@ def itter_path(
                 "toll_cost_per_flow": "sum",
             }
         )
-        # od_df["path"] = od_df["path"].apply(json.dumps)
-        # od_df["edge_id"] = od_df["edge_id"].apply(json.dumps)
 
         # edge flows
         edge_df = (
@@ -728,8 +726,6 @@ def itter_path(
         else:
             conn.append("od_results", od_df)
             conn.append("edge_flows", edge_df)
-
-        logging.info(f"Processed chunk {start // chunk_size +1}")
 
         del chunk, od_df, edge_df
 
