@@ -690,7 +690,7 @@ def itter_path(
             }
         )
         chunk = chunk.merge(
-            road_links[["e_idx", "acc_capacity"]],
+            road_links[["e_idx", "acc_capacity"]],  # !!! e_idx is float
             left_on="path",
             right_on="e_idx",
             how="left",
@@ -791,6 +791,7 @@ def itter_path(
     ).df()
 
     conn.close()
+    temp_edge_flow["e_idx"] = temp_edge_flow["e_idx"].astype(int)  # ensure e_idx as int
     logging.info("Complete itter_path function with Duckdb!")
     return (temp_edge_flow, temp_flow_matrix)
 
@@ -967,6 +968,9 @@ def network_flow_model(
         logging.info(f"Non_allocated_flow: {temp_isolation}")
         # initial_sumod -= temp_isolation
         isolation.extend(isolated_flow_matrix.to_numpy().tolist())
+        if len(temp_flow_matrix) == 0:
+            logging.info("Stop: no remaining flows!")
+            break
 
         # %%
         # calculate edge flows -> [e_idx, flow]
@@ -981,6 +985,7 @@ def network_flow_model(
             temp_flow_matrix,
             num_of_chunk=num_of_chunk,
         )
+
         r = temp_flow_matrix["adjust_r"].min()
         logging.info(f"The minimum r value is: {r}.")
 
