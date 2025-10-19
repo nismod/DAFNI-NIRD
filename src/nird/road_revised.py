@@ -16,6 +16,7 @@ import igraph  # type: ignore
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+import gc
 
 # Local
 import nird.constants as cons
@@ -643,7 +644,7 @@ def itter_path(
     road_links,
     temp_flow_matrix: pd.DataFrame,
     num_of_chunk: int = None,
-    db_path: str = "results.duckdb",
+    db_path: str = "results2.duckdb",
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Iterate through all the paths to calculate edge flows and travel costs."""
     max_chunk_size = 100_000  # 97G
@@ -720,14 +721,21 @@ def itter_path(
         if first:
             conn.register("od_df", od_df)
             conn.execute("CREATE TABLE od_results AS SELECT * FROM od_df")
+            conn.unregister("od_df")
             conn.register("edge_df", edge_df)
             conn.execute("CREATE TABLE edge_flows AS SELECT * FROM edge_df")
+            conn.unregister("edge_df")
             first = False
         else:
+            conn.register("od_df", od_df)
             conn.append("od_results", od_df)
+            conn.unregister("od_df")
+            conn.register("edge_df", edge_df)
             conn.append("edge_flows", edge_df)
+            conn.unregister("edge_df")
 
         del chunk, od_df, edge_df
+        gc.collect()
 
     logging.info("All chunks processed. Aggregating final results...")
 
