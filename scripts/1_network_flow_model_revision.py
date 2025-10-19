@@ -66,8 +66,8 @@ def main(
         base_path / "networks" / "GB_road_links_with_bridges.gpq"
     )
     # od matrix (2021) -> updated to od with bridges
-    od_node_2021 = pd.read_csv(
-        base_path / "census_datasets" / "od_gb_oa_2021_node_with_bridges.csv"
+    od_node_2021 = pd.read_parquet(
+        base_path / "census_datasets" / "od_gb_oa_2021_node_with_bridges.pq"
     )
     od_node_2021["Car21"] = od_node_2021["Car21"] * 2
 
