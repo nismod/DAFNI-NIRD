@@ -8,7 +8,7 @@ import geopandas as gpd  # type: ignore
 import logging
 
 from nird.utils import load_config
-import nird.road_revised as func
+import nird.road_capacity as func
 
 import json
 import warnings

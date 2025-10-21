@@ -49,6 +49,9 @@ def main(
         None: Outputs are saved to files.
     """
     start_time = time.time()
+    db_path = base_path / "dbs" / "baseline.duckdb"
+    logging.info(f"Database path is: {db_path}")
+
     # model parameters
     with open(base_path / "parameters" / "flow_breakpoint_dict.json", "r") as f:
         flow_breakpoint_dict = json.load(f)
@@ -60,6 +63,7 @@ def main(
         min_speed_dict = json.load(f)
     with open(base_path / "parameters" / "urban_speed_cap.json", "r") as f:
         urban_speed_dict = json.load(f)
+    logging.info(flow_capacity_dict)
 
     # network links -> network links with bridges
     road_link_file = gpd.read_parquet(
@@ -106,6 +110,7 @@ def main(
         flow_breakpoint_dict,
         num_of_chunk,
         num_of_cpu,
+        db_path,
     )
 
     isolation_df = pd.DataFrame(

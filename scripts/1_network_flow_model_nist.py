@@ -7,7 +7,7 @@ import pandas as pd
 import geopandas as gpd  # type: ignore
 
 from nird.utils import load_config
-import nird.road_revised as func
+import nird.road_capacity as func
 
 import logging
 import json
@@ -25,6 +25,9 @@ def main(
     sample_stride=1,
 ):
     start_time = time.time()
+    db_path = base_path / "dbs" / f"nist_{year}.duckdb"
+    logging.info(f"Database path is: {db_path}")
+
     # model parameters
     with open(base_path / "parameters" / "flow_breakpoint_dict.json", "r") as f:
         flow_breakpoint_dict = json.load(f)
@@ -82,6 +85,7 @@ def main(
         flow_breakpoint_dict,
         num_of_chunk,
         num_of_cpu,
+        db_path,
     )
 
     isolation_df = pd.DataFrame(
