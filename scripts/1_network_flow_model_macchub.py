@@ -8,7 +8,7 @@ import geopandas as gpd  # type: ignore
 import logging
 
 from nird.utils import load_config
-import nird.road_capacity as func
+import nird.road_revised as func
 
 import json
 import warnings
@@ -90,7 +90,8 @@ def main(
         num_of_cpu,
     )
 
-    isolation = pd.DataFrame(
+    # isolation
+    isolation_df = pd.DataFrame(
         isolation,
         columns=[
             "origin_node",
@@ -98,7 +99,12 @@ def main(
             "flow",
         ],
     )
+    isolation_df = isolation_df[
+        (isolation_df.origin_node != isolation_df.destination_node)
+        & (isolation_df.flow > 0)
+    ].reset_index(drop=True)
 
+    # odpfc
     odpfc_df = pd.DataFrame(
         odpfc,
         columns=[
@@ -124,9 +130,10 @@ def main(
             "toll_cost_per_flow": "first",
         }
     )
+
+    # export files
     out_path = macc_path / "outputs"
     out_path.mkdir(parents=True, exist_ok=True)
-    # export files
     road_links.to_parquet(out_path / f"edge_flow_{year}_SSP{ssp}.gpq")
     isolation.to_parquet(out_path / f"trip_isolation_{year}_SSP{ssp}.pq")
     odpfc_df.to_parquet(out_path / f"odpfc_{year}_SSP{ssp}.pq")

@@ -112,7 +112,7 @@ def main(
         num_of_cpu,
         db_path,
     )
-
+    # isolation
     isolation_df = pd.DataFrame(
         isolation,
         columns=[
@@ -121,6 +121,12 @@ def main(
             "flow",
         ],
     )
+    isolation_df = isolation_df[
+        (isolation_df.origin_node != isolation_df.destination_node)
+        & (isolation_df.flow > 0)
+    ].reset_index(drop=True)
+
+    # odpfc
     odpfc_df = pd.DataFrame(
         odpfc,
         columns=[

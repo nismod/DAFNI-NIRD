@@ -76,7 +76,7 @@ def main(
     (
         road_links,
         isolation,
-        _,  # odpfc,
+        odpfc,
         _,  # cList
     ) = func.network_flow_model(
         road_links,
@@ -88,6 +88,7 @@ def main(
         db_path,
     )
 
+    # isolation
     isolation_df = pd.DataFrame(
         isolation,
         columns=[
@@ -96,9 +97,42 @@ def main(
             "flow",
         ],
     )
+    isolation_df = isolation_df[
+        (isolation_df.origin_node != isolation_df.destination_node)
+        & (isolation_df.flow > 0)
+    ].reset_index(drop=True)
+
+    # odpfc
+    odpfc_df = pd.DataFrame(
+        odpfc,
+        columns=[
+            "origin_node",
+            "destination_node",
+            "path",
+            "flow",
+            "operating_cost_per_flow",
+            "time_cost_per_flow",
+            "toll_cost_per_flow",
+        ],
+    )
+    odpfc_df.path = odpfc_df.path.apply(tuple)
+    odpfc_df = odpfc_df.groupby(
+        by=["origin_node", "destination_node", "path"], as_index=False
+    ).agg(
+        {
+            "flow": "sum",
+            "operating_cost_per_flow": "first",
+            "time_cost_per_flow": "first",
+            "toll_cost_per_flow": "first",
+        }
+    )
+
     # export files
-    isolation_df.to_csv(nist_path / "outputs" / f"trip_isolation_{year}.csv")
-    road_links.to_parquet(nist_path / "outputs" / f"edge_flow_{year}.gpq")
+    out_path = nist_path / "outputs"
+    out_path.mkdir(parents=True, exist_ok=True)
+    isolation_df.to_csv(out_path / f"trip_isolation_{year}.csv")
+    road_links.to_parquet(out_path / f"edge_flow_{year}.gpq")
+    odpfc_df.to_parquet(out_path / f"odpfc_{year}.gpq")
     logging.info(f"The total simulation time: {time.time() - start_time}")
 
 
