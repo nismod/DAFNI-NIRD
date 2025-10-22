@@ -647,7 +647,7 @@ def itter_path(
     db_path: str = "results.duckdb",
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Iterate through all the paths to calculate edge flows and travel costs."""
-    max_chunk_size = 10_000  # 100_000: baseline; 10_000: future scenarios
+    max_chunk_size = 100_000  # 100_000: baseline; 10_000: future scenarios
     if max_chunk_size > len(temp_flow_matrix):
         chunk_size = len(temp_flow_matrix)
     else:
@@ -672,8 +672,8 @@ def itter_path(
     )  # network attributes
 
     conn = duckdb.connect(db_path)
-    conn.execute("DROP TABLE IF EXISTS od_results")
-    conn.execute("DROP TABLE IF EXISTS edge_flows")
+    conn.execute("DROP TABLE IF EXISTS od_results")  # reset table
+    conn.execute("DROP TABLE IF EXISTS edge_flows")  # reset table
 
     first = True
     for start in tqdm(
@@ -996,7 +996,7 @@ def network_flow_model(
         temp_flow_matrix["flow"] = (
             temp_flow_matrix["flow"] * temp_flow_matrix["adjust_r"]
         )
-        temp_flow_matrix["flow"] = temp_flow_matrix.flow.apply(int)  # floor
+        #temp_flow_matrix["flow"] = temp_flow_matrix.flow.apply(int)  # floor
 
         assigned_sumod += temp_flow_matrix["flow"].sum()
         percentage_sumod = assigned_sumod / initial_sumod
@@ -1019,7 +1019,7 @@ def network_flow_model(
         # %%
         # update road link attributes (acc_flow, acc_capacity, acc_speed)
         temp_edge_flow["flow"] = temp_edge_flow["flow"] * temp_edge_flow["adjust_r"]
-        temp_edge_flow["flow"] = temp_edge_flow["flow"].apply(int)
+        #temp_edge_flow["flow"] = temp_edge_flow["flow"].apply(int)
         road_links = road_links.merge(
             temp_edge_flow[["e_idx", "flow"]], on="e_idx", how="left"
         )
