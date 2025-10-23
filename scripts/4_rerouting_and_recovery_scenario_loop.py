@@ -2,6 +2,7 @@
 import sys
 import json
 import warnings
+import gc
 
 from pathlib import Path
 from typing import Dict, List, Tuple, Set
@@ -13,9 +14,7 @@ import pandas as pd
 from tqdm import tqdm
 from collections import defaultdict
 
-import nird.road_recovery as func
-
-# import nird.road_revised as func
+import nird.road_revised as func
 from nird.utils import load_config, get_flow_on_edges
 
 warnings.simplefilter("ignore")
@@ -87,6 +86,9 @@ def main(
     num_of_cpu,
 ):
     logging.info("Start...")
+    db_path = base_path / "dbs" / f"recovery_{depth_thres}_{flood_key}.duckdb"
+    logging.info(f"Database path is: {db_path}")
+
     # Load recovery scenarios
     (
         bridge_recovery_dict,
@@ -175,7 +177,7 @@ def main(
         ].reset_index(drop=True)
 
         # conduct exploded chunks
-        max_chunk_size = 100_000
+        max_chunk_size = 1000
         if max_chunk_size > len(disrupted_od):
             chunk_size = len(disrupted_od)
         else:
@@ -245,6 +247,7 @@ def main(
             1 - disrupted_od["fraction"]
         )
         logging.info(f"The total disrupted flows: {disrupted_od.disrupted_flow.sum()}")
+        # checkpoint1
         # disrupted_od.to_parquet(
         #     base_path.parent
         #     / "results"
@@ -256,6 +259,7 @@ def main(
         disrupted_edge_flow = get_flow_on_edges(
             disrupted_od, "e_id", "path", "disrupted_flow"
         )  # redistribute those od back to road links
+        # checkpoint2
         # disrupted_edge_flow.to_parquet(
         #     base_path.parent
         #     / "results"
@@ -286,7 +290,8 @@ def main(
         )
         road_links["acc_flow"] = (
             road_links["current_flow"] - road_links["disrupted_flow"]
-        ).clip(lower=0)
+        )  # .clip(lower=0)
+        # checkpoint3
         # road_links.to_parquet(
         #     base_path.parent
         #     / "results"
@@ -296,6 +301,7 @@ def main(
         # )
         # print("Complete debug!")
         # sys.exit()
+
         logging.info("Updating road speed limits...")
         road_links["acc_speed"] = road_links.apply(
             lambda x: func.update_edge_speed(
@@ -339,12 +345,15 @@ def main(
             _,
             (post_time, post_operate, post_toll, total_post_cost),
         ) = func.network_flow_model(
-            valid_road_links,
+            valid_road_links,  # update this one
             network,
-            disrupted_od[["origin_node", "destination_node", "Car21"]],
+            disrupted_od[
+                ["origin_node", "destination_node", "Car21"]
+            ],  # update this one
             flow_breakpoint_dict,
             num_of_chunk,
             num_of_cpu,
+            db_path,
         )
 
         # estimate rerouting cost matrix
@@ -411,9 +420,12 @@ def main(
         # reset road_links for next scenario
         road_links = road_links[initial_road_links_cols]
 
+        del isolation_df
         del isolation
         del valid_road_links
+        del disrupted_edge_flow
         del disrupted_od
+        gc.collect()
 
     logging.info("Saving overall rerouting costs to disk...")
     cost_df = pd.DataFrame.from_dict(

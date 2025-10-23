@@ -13,9 +13,7 @@ import pandas as pd
 from tqdm import tqdm
 from collections import defaultdict
 
-import nird.road_recovery as func
-
-# import nird.road_revised as func
+import nird.road_revised as func
 from nird.utils import load_config, get_flow_on_edges
 
 warnings.simplefilter("ignore")
@@ -87,6 +85,10 @@ def main(
     num_of_chunk,
     num_of_cpu,
 ):
+    logging.info("Start...")
+    db_path = base_path / "dbs" / f"recovery_{depth_thres}_{flood_key}.duckdb"
+    logging.info(f"Database path is: {db_path}")
+
     # Load recovery scenarios
     (
         bridge_recovery_dict,
@@ -284,7 +286,7 @@ def main(
     )
     road_links["acc_flow"] = (
         road_links["current_flow"] - road_links["disrupted_flow"]
-    ).clip(lower=0)
+    )  # .clip(lower=0)
     # road_links.to_parquet(
     #     base_path.parent
     #     / "results"
@@ -343,6 +345,7 @@ def main(
         flow_breakpoint_dict,
         num_of_chunk,
         num_of_cpu,
+        db_path,
     )
 
     # estimate rerouting sub costs
