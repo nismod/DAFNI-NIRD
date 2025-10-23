@@ -20,6 +20,7 @@ import gc
 
 # Local
 import nird.constants as cons
+from nird.utils import get_flow_on_edges
 import duckdb
 
 warnings.simplefilter("ignore")
@@ -740,17 +741,17 @@ def itter_path(
     logging.info("All chunks processed. Aggregating final results...")
 
     # edge flows
-    temp_edge_flow = conn.sql(
-        """
-        SELECT
-            e_idx,
-            FIRST(acc_capacity) AS acc_capacity,
-            SUM(flow) AS flow,
-            COALESCE(LEAST(FIRST(acc_capacity) / NULLIF(SUM(flow), 0), 1.0), 1.0) AS adjust_r
-        FROM edge_flows
-        GROUP BY e_idx
-        """
-    ).df()
+    # temp_edge_flow = conn.sql(
+    #     """
+    #     SELECT
+    #         e_idx,
+    #         FIRST(acc_capacity) AS acc_capacity,
+    #         SUM(flow) AS flow,
+    #         COALESCE(LEAST(FIRST(acc_capacity) / NULLIF(SUM(flow), 0), 1.0), 1.0) AS adjust_r
+    #     FROM edge_flows
+    #     GROUP BY e_idx
+    #     """
+    # ).df()
 
     # od results
     temp_flow_matrix = conn.sql(
@@ -791,9 +792,10 @@ def itter_path(
     ).df()
 
     conn.close()
-    temp_edge_flow["e_idx"] = temp_edge_flow["e_idx"].astype(int)  # ensure e_idx as int
-    logging.info("Complete itter_path function with Duckdb!")
-    return (temp_edge_flow, temp_flow_matrix)
+    # temp_edge_flow["e_idx"] = temp_edge_flow["e_idx"].astype(int)  # ensure e_idx as int
+    logging.info("Complete calculating od flow adjustment ratios with Duckdb!")
+    # return (temp_edge_flow, temp_flow_matrix)
+    return temp_flow_matrix
 
 
 def retrieve_path_attributes(path: List[int]) -> Dict:
@@ -853,7 +855,7 @@ def network_flow_model(
     flow_breakpoint_dict: Dict[str, float],
     num_of_chunk: int,
     num_of_cpu: int,
-    db_path: str,
+    db_path: str = "results.duckdb",
 ) -> Tuple[gpd.GeoDataFrame, List, List]:
     """Process-based Network Flow Simulation.
 
@@ -977,10 +979,8 @@ def network_flow_model(
         # calculate edge flows -> [e_idx, flow]
         # and attach cost matrix (fuel, time, toll) to temp_flow_matrix
         logging.info("Calculating edge flows...")
-        (
-            temp_edge_flow,
-            temp_flow_matrix,
-        ) = itter_path(
+
+        temp_flow_matrix = itter_path(
             network,
             road_links,
             temp_flow_matrix,
@@ -996,8 +996,6 @@ def network_flow_model(
         temp_flow_matrix["flow"] = (
             temp_flow_matrix["flow"] * temp_flow_matrix["adjust_r"]
         )
-        #temp_flow_matrix["flow"] = temp_flow_matrix.flow.apply(int)  # floor
-
         assigned_sumod += temp_flow_matrix["flow"].sum()
         percentage_sumod = assigned_sumod / initial_sumod
 
@@ -1018,8 +1016,8 @@ def network_flow_model(
 
         # %%
         # update road link attributes (acc_flow, acc_capacity, acc_speed)
-        temp_edge_flow["flow"] = temp_edge_flow["flow"] * temp_edge_flow["adjust_r"]
-        #temp_edge_flow["flow"] = temp_edge_flow["flow"].apply(int)
+        logging.info("Calculating edge flows...")
+        temp_edge_flow = get_flow_on_edges(temp_flow_matrix, "e_idx", "path", "flow")
         road_links = road_links.merge(
             temp_edge_flow[["e_idx", "flow"]], on="e_idx", how="left"
         )
