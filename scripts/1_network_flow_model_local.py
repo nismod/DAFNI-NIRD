@@ -1,10 +1,11 @@
+# %%
 from pathlib import Path
 import time
 
 import pandas as pd
 import geopandas as gpd  # type: ignore
 
-from nird.utils import load_config
+from nird.utils import load_config, get_flow_on_edges
 import nird.road_revised as func
 
 import logging
@@ -15,6 +16,7 @@ warnings.simplefilter("ignore")
 base_path = Path(load_config()["paths"]["base_path"])
 
 
+# %%
 def main(
     num_of_chunk: int,
     num_of_cpu: int,
@@ -59,6 +61,8 @@ def main(
         min_speed_dict = json.load(f)
     with open(base_path / "parameters" / "urban_speed_cap.json", "r") as f:
         urban_speed_dict = json.load(f)
+    with open(base_path / "networks" / "road" / "nd_map.json", "r") as f:
+        nd_map = json.load(f)
 
     # network links -> network links with bridges
     road_link_file = gpd.read_parquet(
@@ -71,8 +75,12 @@ def main(
         / "od_matrix"
         / "od_gb_oa_2021_node_with_bridges_32p.csv"
     )
-    od_node_2021["Car21"] = od_node_2021["Car21"] * 2
+    od_node_2021.origin_node = od_node_2021.origin_node.map(nd_map)
+    od_node_2021.destination_node = od_node_2021.destination_node.map(nd_map)
+
+    od_node_2021["Car21"] = od_node_2021["Car21"] * 10  # *2
     od_node_2021 = od_node_2021.head(1000)  # debug
+
     logging.info(f"The total od flows are: {od_node_2021.Car21.sum()}")
 
     if sample_stride > 1:
@@ -149,6 +157,9 @@ def main(
             "toll_cost_per_flow": "first",
         }
     )
+    test = get_flow_on_edges(odpfc_df, "e_id", "path", "flow")
+    road_links = road_links.merge(test, on="e_id", how="left")
+
     logging.info(f"The total simulation time: {time.time() - start_time}")
 
 
