@@ -191,15 +191,7 @@ def main(
                 left_on="flood_links",
                 right_on="e_id",
             )
-            od_df = (
-                chunk.groupby(by=["od_id"])
-                .agg(
-                    {
-                        "acc_capacity": "min",
-                    }
-                )
-                .reset_index()
-            )
+            od_df = chunk.groupby(by=["od_id"])["acc_capacity"].min().reset_index()
             if first:
                 conn.register("od_df", od_df)
                 conn.execute("CREATE TABLE od_results AS SELECT * FROM od_df")
@@ -340,8 +332,8 @@ def main(
             / "results"
             / "rerouting_analysis"
             / "revision"
-            / str(depth_key)  # e.g.,30
-            / str(flood_key)  # e.g.,17
+            / str(depth_key)
+            / str(flood_key)
         )
         out_path.mkdir(parents=True, exist_ok=True)
 
