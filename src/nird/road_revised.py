@@ -643,8 +643,10 @@ def itter_path(
     temp_flow_matrix: pd.DataFrame,
     num_of_chunk: int = None,
     db_path: str = "results.duckdb",
+    conn=None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Iterate through all the paths to calculate edge flows and travel costs."""
+
     max_chunk_size = 100_000  # 100_000: baseline; 10_000: future scenarios
     if max_chunk_size > len(temp_flow_matrix):
         chunk_size = len(temp_flow_matrix)
@@ -668,9 +670,9 @@ def itter_path(
     ).set_index(
         "path"
     )  # network attributes
-
-    conn = duckdb.connect(db_path)
-    conn.execute("DROP TABLE IF EXISTS od_results")  # reset table
+    if conn is None:
+        conn = duckdb.connect(db_path)
+    conn.execute("DROP TABLE IF EXISTS od_results_iter")  # reset table
     conn.execute("DROP TABLE IF EXISTS edge_flows")  # reset table
 
     first = True
@@ -709,20 +711,16 @@ def itter_path(
             .reset_index()
         )
         if first:
-            conn.register("od_df", od_df)
-            conn.execute("CREATE TABLE od_results AS SELECT * FROM od_df")
-            conn.unregister("od_df")
-            conn.register("edge_df", edge_df)
-            conn.execute("CREATE TABLE edge_flows AS SELECT * FROM edge_df")
-            conn.unregister("edge_df")
+            conn.register("od_df_tmp", od_df)
+            conn.execute("CREATE TABLE od_results_iter AS SELECT * FROM od_df_tmp")
+            conn.unregister("od_df_tmp")
+            conn.register("edge_df_tmp", edge_df)
+            conn.execute("CREATE TABLE edge_flows AS SELECT * FROM edge_df_tmp")
+            conn.unregister("edge_df_tmp")
             first = False
         else:
-            conn.register("od_df", od_df)
-            conn.append("od_results", od_df)
-            conn.unregister("od_df")
-            conn.register("edge_df", edge_df)
+            conn.append("od_results_iter", od_df)
             conn.append("edge_flows", edge_df)
-            conn.unregister("edge_df")
 
         del chunk, od_df, edge_df
         gc.collect()
@@ -766,70 +764,17 @@ def itter_path(
             o.fuel,
             o.time,
             o.toll
-        FROM od_results o
+        FROM od_results_iter o
         LEFT JOIN od_adjustment a
         USING (origin, destination)
     """
     ).df()
-    conn.close()
 
     temp_flow_matrix.rename(columns={"e_id": "path"}, inplace=True)
+    conn.append("odpfc", temp_flow_matrix)
     logging.info("Complete calculating od flow adjustment ratios with Duckdb!")
-    # origin(name), destination(name), eid(name), flow(int), cost(float)
 
     return temp_flow_matrix
-
-
-def retrieve_path_attributes(path: List[int]) -> Dict:
-    """Retrieve attributes for a given path."""
-    if not path:
-        return None
-    edges = shared_network.es
-    edges_df = pd.DataFrame(
-        {
-            "path": range(len(edges)),
-            "edge_id": edges["e_id"],
-            "time_cost": edges["time_cost"],
-            "operating_cost": edges["operating_cost"],
-            "average_toll_cost": edges["average_toll_cost"],
-        }
-    ).set_index("path")
-    # (edge_id, time_cost, operating_cost, average_toll_cost)
-
-    selected = edges_df.loc[
-        path, ["edge_id", "time_cost", "operating_cost", "average_toll_cost"]
-    ]
-
-    # directly compute aggregated values, no Series
-    edge_id_list = selected["edge_id"].tolist()
-    time_cost_sum = selected["time_cost"].sum()
-    operating_cost_sum = selected["operating_cost"].sum()
-    toll_cost_sum = selected["average_toll_cost"].sum()
-
-    return edge_id_list, time_cost_sum, operating_cost_sum, toll_cost_sum
-
-
-def calculate_path(tfm_chunk: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Calculate path attributes for a chunk of the flow matrix."""
-
-    tfm_chunk[
-        [
-            "edge_id",
-            "time",
-            "fuel",
-            "toll",
-        ]
-    ] = tfm_chunk[
-        "path"
-    ].apply(lambda p: pd.Series(retrieve_path_attributes(p)))
-
-    return tfm_chunk
-
-
-def chunk_df(df, n_chunks: int):
-    """Split dataframe into n roughly equal chunks."""
-    chunk_size = int(np.ceil(len(df) / n_chunks))
-    return [df.iloc[i : i + chunk_size] for i in range(0, len(df), chunk_size)]
 
 
 def network_flow_model(
@@ -869,10 +814,36 @@ def network_flow_model(
 
     # starts
     total_cost = cost_time = cost_fuel = cost_toll = 0
-    odpfc, isolation = [], []
     initial_sumod = remain_od["Car21"].sum()
     assigned_sumod = 0
     iter_flag = 1
+
+    # create db
+    conn = duckdb.connect(db_path)
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE isolated_od (
+            origin_node VARCHAR,
+            destination_node VARCHAR,
+            flow DOUBLE
+        );
+    """
+    )
+
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE odpfc (
+            origin VARCHAR,
+            destination VARCHAR,
+            path VARCHAR,
+            flow DOUBLE,
+            fuel DOUBLE,
+            time DOUBLE,
+            toll DOUBLE,
+        )
+        """
+    )
+
     while total_remain > 0:
         logging.info(f"No.{iter_flag} iteration starts:")
         # check isolations: [origin_node, destination_node, flow]
@@ -881,8 +852,12 @@ def network_flow_model(
         )
         isolated_flow_matrix = remain_od.loc[
             ~mask, ["origin_node", "destination_node", "Car21"]
-        ]  # 38
-        isolation.extend(isolated_flow_matrix.values.tolist())
+        ]
+        # append isolation to db
+        if len(isolated_flow_matrix):
+            isolated_flow_matrix.rename(columns={"Car21": "flow"}, inplace=True)
+            conn.append("isolated_od", isolated_flow_matrix)
+
         remain_od = remain_od[mask].reset_index(drop=True)  # 1698
         temp_isolation = isolated_flow_matrix.Car21.sum()
         logging.info(f"Initial isolated flows: {temp_isolation}")
@@ -953,7 +928,9 @@ def network_flow_model(
         ) = update_od_matrix(temp_flow_matrix)
         # update isolation: [origin, destination, flow]
         logging.info(f"Non_allocated_flow: {temp_isolation}")
-        isolation.extend(isolated_flow_matrix.to_numpy().tolist())
+        if len(isolated_flow_matrix):
+            conn.append("isolated_od", isolated_flow_matrix)
+
         if len(temp_flow_matrix) == 0:
             logging.info("Stop: no remaining flows!")
             break
@@ -967,7 +944,8 @@ def network_flow_model(
             temp_flow_matrix,
             num_of_chunk=num_of_chunk,
             db_path=db_path,
-        )
+            conn=conn,
+        )  # -> fuel, time, toll
         assigned_sumod += temp_flow_matrix["flow"].sum()
         percentage_sumod = assigned_sumod / initial_sumod
 
@@ -1010,9 +988,7 @@ def network_flow_model(
         road_links.drop(columns=["flow"], inplace=True)
         # %%
         # estimate total travel costs:
-        # [origin_node_id, destination_node_id, path(eid), flow, fuel, time, toll]
-        odpfc.extend(temp_flow_matrix.to_numpy().tolist())
-
+        # [origin_node(id), destination_node(id), path(eid), flow, fuel, time, toll]
         cost_fuel += (temp_flow_matrix["flow"] * temp_flow_matrix["fuel"]).sum()
         cost_time += (temp_flow_matrix["flow"] * temp_flow_matrix["time"]).sum()
         cost_toll += (temp_flow_matrix["flow"] * temp_flow_matrix["toll"]).sum()
@@ -1022,7 +998,9 @@ def network_flow_model(
         # check point for next iteration
         if percentage_sumod >= 0.99:
             temp_isolation = remain_od.Car21.sum()
-            isolation.extend(remain_od.to_numpy().tolist())
+            if len(temp_isolation):
+                conn.append("isolated_od", temp_isolation)
+            # isolation.extend(remain_od.to_numpy().tolist())
             logging.info(
                 f"Stop: {percentage_sumod*100}% of flows have been allocated with "
                 f"{temp_isolation} extra isolated flows."
@@ -1031,7 +1009,9 @@ def network_flow_model(
 
         if iter_flag > 5:
             temp_isolation = remain_od.Car21.sum()
-            isolation.extend(remain_od.to_numpy().tolist())
+            if len(temp_isolation):
+                conn.append("isolated_od", temp_isolation)
+            # isolation.extend(remain_od.to_numpy().tolist())
             logging.info(
                 "Stop: Maximum iterations reached (5) with "
                 f"{temp_isolation} extra isolated flows. "
@@ -1048,6 +1028,35 @@ def network_flow_model(
 
     cList = [cost_time, cost_fuel, cost_toll, total_cost]
     road_links = road_links[road_links_columns]
+
+    # create isolation and odpfc from db
+    isolation = conn.execute(
+        """
+        SELECT
+        origin_node,
+        destination_node,
+        SUM(flow) AS flow
+        FROM isolated_od
+        GROUP BY origin_node, destination_node
+        """
+    ).df()
+
+    odpfc = conn.execute(
+        """
+        SELECT
+            origin AS origin_node,
+            destination AS destination_node,
+            path,
+            SUM(flow) AS flow,
+            MIN(fuel) AS operating_cost_per_flow,
+            MIN(time) AS time_cost_per_flow,
+            MIN(toll) AS toll_cost_per_flow
+        FROM odpfc
+        GROUP BY origin, destination, path
+        """
+    ).df()
+
+    conn.close()
 
     logging.info("The flow simulation is completed!")
     logging.info(f"total travel cost is (£): {total_cost}")
