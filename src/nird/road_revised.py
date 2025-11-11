@@ -686,7 +686,7 @@ def itter_path(
         logging.info("No rows available for itter_path; skipping.")
         return
 
-    max_chunk_size = 100_000  # 100_000: baseline; 10_000: future scenarios
+    max_chunk_size = 100_000
     if max_chunk_size > total_rows:
         chunk_size = total_rows
     else:
@@ -773,6 +773,7 @@ def itter_path(
 
     # od results
     # origin, destination, path, flow, cost
+    # 1) create base
     conn.execute(
         """
     CREATE OR REPLACE TEMP TABLE base AS
@@ -900,7 +901,7 @@ def network_flow_model(
     # create db (remove the pre-exist one)
     if os.path.exists(db_path):
         os.remove(db_path)
-
+    # create isolated_od table
     conn = duckdb.connect(db_path)
     conn.execute(
         """
@@ -911,6 +912,7 @@ def network_flow_model(
         );
     """
     )
+    # create odpfc table
     conn.execute(
         """
         CREATE OR REPLACE TABLE odpfc (
@@ -924,6 +926,7 @@ def network_flow_model(
         )
         """
     )
+    # create remain_od table
     conn.execute("DROP TABLE IF EXISTS remain_od")
     conn.register(
         "remain_od_tmp",
@@ -1036,7 +1039,7 @@ def network_flow_model(
 
         flow_batch: List[Tuple[str, str, List[int], float]] = []
         isolated_batch: List[Tuple[str, str, float]] = []
-        batch_size = 10_000
+        batch_size = 100_000
 
         def flush_flow_batch() -> None:
             nonlocal flow_batch
