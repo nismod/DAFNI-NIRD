@@ -24,8 +24,6 @@ odpfc_out_path = out_path / "odpfc.pq"
 
 
 def main(
-    year,
-    ssp,
     num_of_chunk,
     num_of_cpu,
     sample_stride=1,
