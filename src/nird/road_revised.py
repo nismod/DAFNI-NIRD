@@ -877,10 +877,10 @@ def network_flow_model(
     List[float]
         Aggregate costs in the order ``[cost_time, cost_fuel, cost_toll, total_cost]``.
     """
-    if iso_out_path is None:
-        raise ValueError("iso_out_path must be provided!")
-    if odpfc_out_path is None:
-        raise ValueError("odpfc_out_path must be provided!")
+    # if iso_out_path is None:
+    #     raise ValueError("iso_out_path must be provided!")
+    # if odpfc_out_path is None:
+    #     raise ValueError("odpfc_out_path must be provided!")
     road_links_columns = road_links.columns.tolist()
 
     total_remain = remain_od["Car21"].sum()
@@ -1366,35 +1366,36 @@ def network_flow_model(
     road_links = road_links[road_links_columns]
 
     # create isolation and odpfc from db
-    conn.execute(
-        f"""
-        COPY (
-            SELECT
-                origin_node,
-                destination_node,
-                SUM(flow) AS flow
-            FROM isolated_od
-            GROUP BY origin_node, destination_node
-        ) TO '{iso_out_path}' (FORMAT PARQUET);
-    """
-    )
-
-    conn.execute(
-        f"""
-        COPY (
-            SELECT
-                origin AS origin_node,
-                destination AS destination_node,
-                path,
-                SUM(flow) AS flow,
-                MIN(fuel) AS operating_cost_per_flow,
-                MIN(time) AS time_cost_per_flow,
-                MIN(toll) AS toll_cost_per_flow
-            FROM odpfc
-            GROUP BY origin, destination, path
-        ) TO '{odpfc_out_path}' (FORMAT PARQUET);
-    """
-    )
+    if iso_out_path is not None:
+        conn.execute(
+            f"""
+            COPY (
+                SELECT
+                    origin_node,
+                    destination_node,
+                    SUM(flow) AS flow
+                FROM isolated_od
+                GROUP BY origin_node, destination_node
+            ) TO '{iso_out_path}' (FORMAT PARQUET);
+        """
+        )
+    if odpfc_out_path is not None:
+        conn.execute(
+            f"""
+            COPY (
+                SELECT
+                    origin AS origin_node,
+                    destination AS destination_node,
+                    path,
+                    SUM(flow) AS flow,
+                    MIN(fuel) AS operating_cost_per_flow,
+                    MIN(time) AS time_cost_per_flow,
+                    MIN(toll) AS toll_cost_per_flow
+                FROM odpfc
+                GROUP BY origin, destination, path
+            ) TO '{odpfc_out_path}' (FORMAT PARQUET);
+        """
+        )
     conn.close()
 
     logging.info("The flow simulation is completed!")
