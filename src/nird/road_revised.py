@@ -487,10 +487,15 @@ def update_network_structure(
         how="left",
     )
     temp_edge_flow["e_idx"] = temp_edge_flow["e_idx"].astype(int)
+    # create mask
+    ratio = temp_edge_flow["acc_capacity"] / temp_edge_flow["current_capacity"].replace(
+        0, np.nan
+    )
+    mask = (temp_edge_flow["acc_capacity"] < 1) | (ratio < 0.001)
     # drop fully utilised edges from the network
     zero_capacity_edges = set(
         temp_edge_flow.loc[
-            temp_edge_flow["acc_capacity"] / temp_edge_flow["current_capacity"] < 0.001,
+            mask,
             "e_idx",
         ].tolist()
     )
@@ -882,12 +887,8 @@ def network_flow_model(
     List[float]
         Aggregate costs in the order ``[cost_time, cost_fuel, cost_toll, total_cost]``.
     """
-    # if iso_out_path is None:
-    #     raise ValueError("iso_out_path must be provided!")
-    # if odpfc_out_path is None:
-    #     raise ValueError("odpfc_out_path must be provided!")
-    road_links_columns = road_links.columns.tolist()
 
+    road_links_columns = road_links.columns.tolist()
     total_remain = remain_od["Car21"].sum()
     logging.info(f"The initial supply is {total_remain}")
     number_of_edges = len(list(network.es))
@@ -1080,7 +1081,7 @@ def network_flow_model(
             origin_node, destinations, paths, flows = shortest_path
             for dest, path, flow in zip(destinations, paths, flows):
                 flow_val = float(flow) if flow is not None else 0.0
-                if not path:
+                if not path:  # if no path between OD -> isolation
                     isolated_batch.append((origin_node, dest, flow_val))
                 else:
                     flow_batch.append((origin_node, dest, path, flow_val))
@@ -1331,7 +1332,7 @@ def network_flow_model(
             )
             break
 
-        if iter_flag > 3:
+        if iter_flag > 4:  # 5 iterations
             temp_isolation = (
                 conn.execute(
                     "SELECT COALESCE(SUM(Car21), 0.0) FROM remain_od"
