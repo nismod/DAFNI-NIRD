@@ -482,12 +482,17 @@ def update_network_structure(
         f"#road_links: {len(road_links)}, #valid_links: {len(road_links_valid)}"
     )
     temp_edge_flow = temp_edge_flow.merge(
-        road_links_valid[["e_id", "e_idx", "acc_capacity"]], on="e_id", how="left"
+        road_links_valid[["e_id", "e_idx", "acc_capacity", "current_capacity"]],
+        on="e_id",
+        how="left",
     )
     temp_edge_flow["e_idx"] = temp_edge_flow["e_idx"].astype(int)
     # drop fully utilised edges from the network
     zero_capacity_edges = set(
-        temp_edge_flow.loc[temp_edge_flow["acc_capacity"] < 1, "e_idx"].tolist()
+        temp_edge_flow.loc[
+            temp_edge_flow["acc_capacity"] / temp_edge_flow["current_capacity"] < 0.001,
+            "e_idx",
+        ].tolist()
     )
     network.delete_edges(list(zero_capacity_edges))
     num_of_edges_update = len(list(network.es))
