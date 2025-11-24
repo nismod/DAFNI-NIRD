@@ -151,7 +151,7 @@ def compute_damage_level_on_flooded_roads(
         ):
             if depth < 50:
                 return "no"
-            if 50 <= depth < 100:
+            elif 50 <= depth < 100:
                 return "minor"
             elif 100 <= depth < 200:
                 return "moderate"
@@ -167,7 +167,7 @@ def compute_damage_level_on_flooded_roads(
         ):
             if depth < 50:
                 return "no"
-            if 50 <= depth < 100:
+            elif 50 <= depth < 100:
                 return "no"
             elif 100 <= depth < 200:
                 return "no"
@@ -180,7 +180,7 @@ def compute_damage_level_on_flooded_roads(
         else:
             if depth < 50:
                 return "no"
-            if 50 <= depth < 100:
+            elif 50 <= depth < 100:
                 return "no"
             elif 100 <= depth < 200:
                 return "minor"
@@ -198,7 +198,7 @@ def compute_damage_level_on_flooded_roads(
         ):
             if depth < 50:
                 return "no"
-            if 50 <= depth < 100:
+            elif 50 <= depth < 100:
                 return "minor"
             elif 100 <= depth < 200:
                 return "minor"
@@ -214,7 +214,7 @@ def compute_damage_level_on_flooded_roads(
         ):
             if depth < 50:
                 return "no"
-            if 50 <= depth < 100:
+            elif 50 <= depth < 100:
                 return "minor"
             elif 100 <= depth < 200:
                 return "moderate"
@@ -225,9 +225,11 @@ def compute_damage_level_on_flooded_roads(
             else:
                 return np.nan
         else:
-            if depth < 50:
+            if depth <= 0:
+                return "no"
+            elif 0 < depth < 50:
                 return "minor"
-            if 50 <= depth < 100:
+            elif 50 <= depth < 100:
                 return "moderate"
             elif 100 <= depth < 200:
                 return "moderate"
