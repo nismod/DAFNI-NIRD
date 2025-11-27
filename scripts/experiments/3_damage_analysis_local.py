@@ -12,8 +12,10 @@ from nird.utils import load_config
 from snail import damages
 
 warnings.simplefilter("ignore")
+pd.set_option("display.max_columns", None)
 
-base_path = Path(load_config()["paths"]["soge_clusters"])
+
+base_path = Path(load_config()["paths"]["base_path"])
 
 
 def create_damage_curves(damage_ratio_df: pd.DataFrame) -> Dict:
@@ -122,7 +124,7 @@ def compute_damage_values(
     lanes: int,
     road_label: str,
     damage_level: str,
-    damage_values: float,  # million £/unit
+    damage_values: Dict,  # million £/unit
     bridge_width=None,
 ) -> Tuple[float, float, float]:
     """
@@ -196,7 +198,6 @@ def compute_damage_values(
         min_cost, max_cost = compute_bridge_damage(
             length, bridge_width, flood_type, damage_level
         )
-
     elif road_label in ["tunnel", "road"]:
         urban_key = "urb" if urban == 1 else "sub"
         if road_classification == "Motorway":
@@ -309,7 +310,20 @@ def calculate_damage(
             damage_values,
             row.averageWidth,
         )
-
+        if row.road_label == "bridge":
+            unit_cost_min = damage_values[f"bridge_{flood_type}"][
+                f"{row[f'damage_level_{flood_type}']}"
+            ]["min"]
+            unit_cost_max = damage_values[f"bridge_{flood_type}"][
+                f"{row[f'damage_level_{flood_type}']}"
+            ]["max"]
+        else:
+            unit_cost_min = damage_values[f"{row.road_label}"][
+                f"{row[f'damage_level_{flood_type}']}"
+            ]["min"]
+            unit_cost_max = damage_values[f"{row.road_label}"][
+                f"{row[f'damage_level_{flood_type}']}"
+            ]["max"]
         # Return a dictionary of results for easier assignment
         return {
             f"{curve1}_{flood_type}_damage_fraction": damage_fraction1,
@@ -320,6 +334,8 @@ def calculate_damage(
             f"{curve2}_{flood_type}_damage_value_min": damage_values_2[0],
             f"{curve2}_{flood_type}_damage_value_max": damage_values_2[1],
             f"{curve2}_{flood_type}_damage_value_mean": damage_values_2[2],
+            f"{flood_type}_unit_cost_min": unit_cost_min,
+            f"{flood_type}_unit_cost_max": unit_cost_max,
         }
 
     # Apply calculation for each flood type
@@ -414,57 +430,45 @@ def format_intersections(
     return intersections_gp
 
 
-def main():
+def main(depth_thres):
+    """Main function
+
+    Model Inputs
+    ------------
+    - damage_ratio_road_flood.xlsx: damage curves
+    - damage_cost_road_flood_uk.xlsx: asset damage values
+    - GB_road_links_with_bridges.gpq: network links
+    - intersections: module 2 output.
+
+    Outputs
+    -------
+    - pd.DataFrame:
+        intersections_with_damages (min, max, mean)
     """
-    Main function to calculate damage fractions and costs for disrupted road links
-        based on flood depth.
 
-    Model Inputs:
-        - damage_ratio_road_flood.xlsx:
-            Excel file containing damage curves for various road classifications and
-                flow conditions.
-        - damage_cost_road_flood_uk.xlsx:
-            Excel file containing asset damage values for roads, tunnels, and bridges.
-        - GB_road_links_with_bridges.gpq:
-            GeoDataFrame of road network links with attributes.
-        - intersections:
-            Output from module 2 containing intersection results with flood depth and
-                damage levels.
-
-    Model Outputs:
-        - intersections_with_damages.csv:
-            CSV file containing damage fractions and costs (min, max, mean) for
-                disrupted road links.
-
-    Parameters:
-        depth_thres (int): Flood depth threshold in centimeters for road closure.
-
-    Returns:
-        None: Outputs are saved to files.
-    """
     # damage curves
     damages_ratio_df = pd.read_excel(
-        base_path / "damage_curves" / "damage_ratio_road_flood.xlsx"
+        base_path / "tables" / "damage_ratio_road_flood.xlsx"
     )
     damage_curves = create_damage_curves(damages_ratio_df)
 
     # damage values (updated with UK values)
     road_links = gpd.read_parquet(
-        base_path / "networks" / "GB_road_links_with_bridges.gpq"
+        base_path / "networks" / "road" / "GB_road_links_with_bridges.gpq"
     )
     road_damage_file = pd.read_excel(
-        base_path / "asset_costs" / "damage_cost_road_flood_uk.xlsx", sheet_name="roads"
+        base_path / "tables" / "damage_cost_road_flood_uk.xlsx", sheet_name="roads"
     )
     tunnel_damage_file = pd.read_excel(
-        base_path / "asset_costs" / "damage_cost_road_flood_uk.xlsx",
+        base_path / "tables" / "damage_cost_road_flood_uk.xlsx",
         sheet_name="tunnels",
     )
     bridge_surface_damage_file = pd.read_excel(
-        base_path / "asset_costs" / "damage_cost_road_flood_uk.xlsx",
+        base_path / "tables" / "damage_cost_road_flood_uk.xlsx",
         sheet_name="bridges-surface",
     )
     bridge_river_damage_file = pd.read_excel(
-        base_path / "asset_costs" / "damage_cost_road_flood_uk.xlsx",
+        base_path / "tables" / "damage_cost_road_flood_uk.xlsx",
         sheet_name="bridges-river",
     )
     dv_road_dict = defaultdict(lambda: defaultdict(float))
@@ -503,10 +507,10 @@ def main():
     intersections_list = []
     for root, _, files in os.walk(
         base_path.parent
-        / "results"
+        / "outputs"
         / "disruption_analysis"
         / "revision"
-        / "15"
+        / str(depth_thres)
         / "intersections"
     ):
         for file in files:
@@ -515,12 +519,20 @@ def main():
 
     for intersections_path in intersections_list:
         flood_key = intersections_path.stem
-        out_path = base_path.parent / "results" / "damage_analysis" / "revision"
+        out_path = (
+            base_path.parent
+            / "outputs"
+            / "damage_analysis"
+            / "revision"
+            / f"{flood_key}_with_damage_values.csv"
+        )
 
         print(f"Calculate damages for {flood_key}...")
         # format intersections
         intersections = pd.read_parquet(intersections_path)
-        intersections = format_intersections(intersections, road_links)
+        intersections = format_intersections(
+            intersections, road_links
+        )  # attach road link attributes
 
         # append a few more columns into the table
         intersections["surface_unit_cost_min"] = np.nan
@@ -539,12 +551,8 @@ def main():
                 & (intersections_with_damage.damage_level_surface == "no")
             )
         ].reset_index(drop=True)
-        # export results
-        (out_path).mkdir(parents=True, exist_ok=True)
-        intersections_with_damage.to_csv(
-            out_path / f"{flood_key}_with_damage_values.csv", index=False
-        )
+        intersections_with_damage.to_csv(out_path, index=False)
 
 
 if __name__ == "__main__":
-    main()  # direct damages are irrelevant with depth threshold
+    main(15)  # the results are irrelevant to depth_key for direct damage analyis
