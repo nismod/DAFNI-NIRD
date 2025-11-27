@@ -85,11 +85,7 @@ def main(
 ):
     # base_path: .../preprocessed_data
     od = conn.read_parquet(
-        base_path.parent
-        / "results"
-        / "base_scenario"
-        / "revision"
-        / "odpfc_grouped.pq"
+        base_path.parent / "results" / "base_scenario" / "revision" / "odpfc_grouped.pq"
     )
     recovery_rates = pd.read_csv(base_path / "tables" / "recovery design_updated.csv")
     recovery_rates_dict = {

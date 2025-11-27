@@ -1,11 +1,10 @@
-# %%
 from pathlib import Path
 import time
 
 import pandas as pd
 import geopandas as gpd  # type: ignore
 
-from nird.utils import load_config, get_flow_on_edges
+from nird.utils import load_config
 import nird.road_revised as func
 
 import logging
@@ -16,7 +15,6 @@ warnings.simplefilter("ignore")
 base_path = Path(load_config()["paths"]["base_path"])
 
 
-# %%
 def main(
     num_of_chunk: int,
     num_of_cpu: int,
@@ -78,7 +76,7 @@ def main(
     od_node_2021.origin_node = od_node_2021.origin_node.map(nd_map)
     od_node_2021.destination_node = od_node_2021.destination_node.map(nd_map)
 
-    od_node_2021["Car21"] = od_node_2021["Car21"] * 10  # *2
+    od_node_2021["Car21"] = od_node_2021["Car21"] * 100  # debug * 100
     od_node_2021 = od_node_2021.head(1000)  # debug
 
     logging.info(f"The total od flows are: {od_node_2021.Car21.sum()}")
@@ -88,7 +86,6 @@ def main(
         od_node_2021 = od_node_2021.iloc[::sample_stride]
 
     logging.info(f"\n{od_node_2021}")
-    logging.info(f"Total flows: {od_node_2021.Car21.sum()}")
 
     # initialise road links
     logging.info("Generate road links")
@@ -101,6 +98,7 @@ def main(
         min_speed_dict,
         max_flow_speed_dict=None,
     )
+    road_links["current_capacity"] = road_links["acc_capacity"].copy()
     # create igraph network
     logging.info("Create igraph network")
     network, road_links = func.create_igraph_network(road_links)
@@ -108,8 +106,6 @@ def main(
     logging.info("Run simulation")
     (
         road_links,
-        isolation,
-        odpfc,
         _,
     ) = func.network_flow_model(
         road_links,
@@ -118,48 +114,13 @@ def main(
         flow_breakpoint_dict,
         num_of_chunk,
         num_of_cpu,
+        db_path=base_path.parent / "outputs" / "test" / "results.duckdb",
+        iso_out_path=base_path.parent
+        / "outputs"
+        / "test"
+        / "isolation.pq",  # update with input
+        odpfc_out_path=base_path.parent / "outputs" / "test" / "odpfc.pq",
     )
-    # trip isolation
-    isolation_df = pd.DataFrame(
-        isolation,
-        columns=[
-            "origin_node",
-            "destination_node",
-            "flow",
-        ],
-    )
-    isolation_df = isolation_df[
-        (isolation_df.origin_node != isolation_df.destination_node)
-        | (isolation_df.flow > 0)
-    ].reset_index()
-
-    # odpfc
-    odpfc_df = pd.DataFrame(
-        odpfc,
-        columns=[
-            "origin_node",
-            "destination_node",
-            "path",
-            "flow",
-            "operating_cost_per_flow",
-            "time_cost_per_flow",
-            "toll_cost_per_flow",
-        ],
-    )
-    odpfc_df.path = odpfc_df.path.apply(tuple)
-    odpfc_df = odpfc_df.groupby(
-        by=["origin_node", "destination_node", "path"], as_index=False
-    ).agg(
-        {
-            "flow": "sum",
-            "operating_cost_per_flow": "first",
-            "time_cost_per_flow": "first",
-            "toll_cost_per_flow": "first",
-        }
-    )
-    test = get_flow_on_edges(odpfc_df, "e_id", "path", "flow")
-    road_links = road_links.merge(test, on="e_id", how="left")
-
     logging.info(f"The total simulation time: {time.time() - start_time}")
 
 

@@ -422,7 +422,7 @@ def main(depth_thres):
 
     # base scenario simulation results
     base_scenario_links = gpd.read_parquet(
-        base_path.parent / "outputs" / "base_scenario" / "edge_flows_32p.gpq"
+        base_path.parent / "outputs" / "base_scenario" / "revision" / "edge_flows.gpq"
     )
     base_scenario_links.rename(
         columns={
@@ -474,7 +474,6 @@ def main(depth_thres):
     event_dict = defaultdict(lambda: defaultdict(list))
     for flood_type, list_of_events in event_files.items():
         for event_path in list_of_events:
-            # breakpoint()
             event_key = Path(event_path).parts[6].split("_")[0]
             event_dict[event_key][flood_type].append(event_path)
 
@@ -486,13 +485,13 @@ def main(depth_thres):
         )
 
         # out path
-        out_path = (
-            base_path.parent
-            / "outputs"
-            / "disruption_analysis"
-            / "20241229"
-            / str(depth_thres)
-        )
+        # out_path = (
+        #     base_path.parent
+        #     / "outputs"
+        #     / "disruption_analysis"
+        #     / "20241229"
+        #     / str(depth_thres)
+        # )
 
         intersections = gpd.GeoDataFrame(
             columns=["e_id", "length", "index_i", "index_j"]
@@ -540,11 +539,10 @@ def main(depth_thres):
         # save intersectiosn for damage analysis
         if intersections.empty:
             print("Warning: intersections result is empty!")
-            # breakpoint()
             continue
-        intersections.to_parquet(
-            out_path / "intersections" / f"intersections_{flood_key}.pq"
-        )
+        # intersections.to_parquet(
+        #     out_path / "intersections" / f"intersections_{flood_key}.pq"
+        # )
 
         # road integrations
         road_links = features_with_damage(
@@ -585,16 +583,17 @@ def main(depth_thres):
             ),
             axis=1,
         )
-        road_links.to_parquet(out_path / "links" / f"road_links_{flood_key}.gpq")
+        # road_links.to_parquet(out_path / "links" / f"road_links_{flood_key}.gpq")
 
 
 if __name__ == "__main__":
-    try:
-        depth_thres = int(sys.argv[1])
-    except (IndexError, ValueError):
-        print(
-            "Error: Please provide the flood depth for road closure "
-            "(e.g., 15, 30 or 60 cm)!"
-        )
-        sys.exit(1)
-    main(depth_thres)
+    # try:
+    #     depth_thres = int(sys.argv[1])
+    # except (IndexError, ValueError):
+    #     print(
+    #         "Error: Please provide the flood depth for road closure "
+    #         "(e.g., 15, 30 or 60 cm)!"
+    #     )
+    #     sys.exit(1)
+    # main(depth_thres)
+    main(15)
