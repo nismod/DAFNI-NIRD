@@ -60,7 +60,7 @@ timetable["times"] = timetable["times"].apply(ast.literal_eval)
 
 
 # %%
-def minutes_diff(t1_str, t2_str):
+def estimate_travel_time(t1_str, t2_str):
     fmt = "%H%M"
     t1 = datetime.strptime(t1_str, fmt)
     t2 = datetime.strptime(t2_str, fmt)
@@ -81,7 +81,7 @@ def build_travel_dict(stations, stops, times):
                 to_station = stations[i]
                 depart_time = times[prev_stop_idx][1]  # departure at from_station
                 arrive_time = times[i][0]  # arrival at to_station
-                travel_time = minutes_diff(depart_time, arrive_time)
+                travel_time = estimate_travel_time(depart_time, arrive_time)  # seconds
                 if travel_time == 0:  # dont append 0 travel time
                     continue
                 d[from_station][to_station].append(travel_time)
@@ -91,6 +91,7 @@ def build_travel_dict(stations, stops, times):
 
 
 # %%
+# estimate station-wise travel time
 all_travel_dict = defaultdict(lambda: defaultdict(list))
 for _, row in timetable.iterrows():
     travel_dict = build_travel_dict(row["path"], row["stops"], row["times"])
@@ -118,7 +119,7 @@ all_travel_dict_sorted = {
 #     print(f"Path {i+1}: {path}, length={length}")
 
 # %%
-# Convert TIPLOC → node_id lookup once
+# Convert TIPLOC to node_id lookup once
 tiploc_node = stations.set_index("TIPLOC")["node_id"].to_dict()
 
 # Precompute a direct (u, v): ignore direction
@@ -161,7 +162,7 @@ for from_station, to_dict in all_travel_dict_sorted.items():
                     w for _, _, _, w in edges_data
                 )  # length of path between stations (meter)
                 for _, _, eid, _ in edges_data:
-                    total_edge_speeds[eid].append(total_length / time)
+                    total_edge_speeds[eid].append(total_length / time)  # m/s
 
         except nx.exception.NetworkXNoPath:
             print(f"No path between {src} and {tgt}")
@@ -171,7 +172,7 @@ edge_speed_dict = dict(total_edge_speeds)  # 7 mins
 edge_speed_dict2 = defaultdict(list)
 for edge_id, speeds in edge_speed_dict.items():
     for speed in speeds:
-        if speed <= 50:
+        if speed <= 50:  # add a cap to max train speed (180 km/h or 110 mile/hour)
             edge_speed_dict2[edge_id].append(speed)
 
 edge_speed_dict2 = {
@@ -190,9 +191,10 @@ out_path = (
 )
 with open(out_path, "wt") as f:
     json.dump(edge_speed_dict2, f)
-# only 30% of the edges were used according to timetable
+# timetable represents about 30% of edge usage of the rail network
 
 # %%
+# classify edges into slow/fast track
 edges["track_label"] = "slow"
 edges.loc[edges.track_id2.isin(["11", "21", "31"]), "track_label"] = "fast"
 edges["speeds_mps"] = edges.edge_id.map(edge_speed_dict2)
@@ -207,11 +209,12 @@ valid_edges["speed_mps"] = valid_edges.apply(
     axis=1,
 )
 invalid_edges = edges[edges.speeds_mps.isnull()].reset_index(drop=True)
-print(f"valid: {valid_edges.shape}")
-print(f"invalid: {invalid_edges.shape}")
+print(f"valid: {valid_edges.shape}")  # edges with speed
+print(f"invalid: {invalid_edges.shape}")  # edges without speed
 
 
 # %%
+# edge speed interpolation
 def estimate_speed(valid_edges, invalid_edges):
     from_nodes = valid_edges[["from_node", "speed_mps"]].rename(
         columns={"from_node": "node"}

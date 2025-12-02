@@ -12,9 +12,7 @@ INPUT_PATH_MACC = Path(r"C:\Oxford\Research\MACCHUB\local")
 
 # %%
 # load od matrix
-od = pd.read_csv(
-    INPUT_PATH_MACC / "data" / "incoming" / "rails" / "od_adjusted_updated.csv"
-)
+od = pd.read_csv(INPUT_PATH_MACC / "data" / "incoming" / "rails" / "od.csv")
 od = od[od["flows_adjusted"] > 0].reset_index(drop=True)
 
 # %%
@@ -48,6 +46,7 @@ network = igraph.Graph.TupleList(
 )
 
 # %%
+# allocate od to the network
 temp = od.groupby("origin_node_idx", as_index=False).agg(
     {"destination_node_idx": list, "flows_adjusted": list}
 )
@@ -55,7 +54,6 @@ origins = temp["origin_node_idx"].tolist()
 destinations = temp["destination_node_idx"].tolist()
 flows = temp["flows_adjusted"].tolist()
 
-# %%
 list_of_spath = []
 for i in range(len(origins)):
     paths = network.get_shortest_paths(
@@ -72,17 +70,14 @@ temp_flow_matrix = pd.DataFrame(
 ).explode(["destination", "path", "flow"])
 
 # %%
+# estimate edge flows
 edges["edge_idx"] = edges["edge_id"].apply(
     lambda x: network.es["edge_id"].index(x)
 )  # 49s
-# %%
 temp_edge_flow = get_flow_on_edges(temp_flow_matrix, "edge_idx", "path", "flow")
-
-# to merge flows back to edges
 edges = edges.merge(
     temp_edge_flow[["edge_idx", "flow"]], on="edge_idx", how="left"
 ).fillna(0)
 
-# edges.to_parquet(
-#     INPUT_PATH_MACC / "data" / "incoming" / "rails" / "flows_undirected_updated.gpq"
-# )
+# save results
+edges.to_parquet(INPUT_PATH_MACC / "data" / "incoming" / "rails" / "flows.gpq")
