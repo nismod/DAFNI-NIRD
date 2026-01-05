@@ -1,5 +1,5 @@
 """
-Xs:
+temp_Xs:
 - exposure portfolio: length, road_classification, form_of_way, trunk_road,
 urban, lanes, averageWidth, road_label
 - hazard characteristics: flood_type, flood_depth
@@ -217,8 +217,10 @@ for root, dirs, files in os.walk(path):
             intersections = pd.concat([intersections, temp], axis=0, ignore_index=True)
 
 Xs = preprocess(intersections, road_links, lad_shp)
-
 # %%
+# temp_Xs = Xs.copy()
+# remove damage level
+temp_Xs = Xs[Xs.damage_level == "severe"].reset_index(drop=True)  #!!! update
 # convert string objects to numeric values for sensitivity analysis
 road_classification_mapping = {
     "B Road": 0,
@@ -246,79 +248,59 @@ road_label_mapping = {
 flood_type_mapping = {"surface": 0, "river": 1}
 damage_level_mapping = {"no": 0, "minor": 1, "moderate": 2, "extensive": 3, "severe": 4}
 
-Xs["road_classification"] = Xs["road_classification"].map(road_classification_mapping)
-Xs["form_of_way"] = Xs["form_of_way"].map(form_of_way_mapping)
-Xs["trunk_road"] = Xs["trunk_road"].map(trunk_road_mapping)
-Xs["road_label"] = Xs["road_label"].map(road_label_mapping)
-# Xs["LAD21CD"] = Xs["LAD21CD"].map(admin_mapping)
-Xs["flood_type"] = Xs["flood_type"].map(flood_type_mapping)
-Xs["damage_level"] = Xs["damage_level"].map(damage_level_mapping)
-# Xs = normalised(Xs)  # nomralize all input features between 0 and 1
+temp_Xs["road_classification"] = temp_Xs["road_classification"].map(
+    road_classification_mapping
+)
+temp_Xs["form_of_way"] = temp_Xs["form_of_way"].map(form_of_way_mapping)
+temp_Xs["trunk_road"] = temp_Xs["trunk_road"].map(trunk_road_mapping)
+temp_Xs["road_label"] = temp_Xs["road_label"].map(road_label_mapping)
+temp_Xs["flood_type"] = temp_Xs["flood_type"].map(flood_type_mapping)
+temp_Xs["damage_level"] = temp_Xs["damage_level"].map(damage_level_mapping)
+temp_Xs = normalised(temp_Xs)  # nomralize all input features between 0 and 1
 
-# %%
 # Morris
 # Define the problem for Morris Sensitivity Analysis
-D = 13  # Number of input variables
+D = 11  # Number of input variables
 problem = {
     "num_vars": D,
     "names": [
-        "length",  # Length of the road link
-        "road_classification",  # e.g., A Road, B Road, Motorway
-        "form_of_way",  #  e.g., Single Carriageway, Dual Carriageway
-        "trunk_road",  # Whether the road is a trunk road (True/False)
-        "urban",  # Urban or rural classification (binary: 0 or 1)
-        "lanes",  # Number of lanes on the road
-        "averageWidth",  # Average width of the road link
-        "road_label",  # Label indicating road structure (e.g., road, bridge, tunnel)
-        # "LAD21CD",  # Local Authority District code (categorical)
-        "flood_type",  # Type of flood (e.g., surface, river)
-        "flood_depth",  # Depth of flooding at the road link
-        "damage_level",  # Level of damage (e.g., no, minor, moderate, extensive, severe)
-        "damage_ratio",  # Damage ratio (min, max)
-        "damage_value",  # Unit repairing/maintenance cost (min, max)"
+        "Road Length",  # Length of the road link
+        "Road Classification",  # e.g., A Road, B Road, Motorway
+        "Carriageway Type",  #  e.g., Single Carriageway, Dual Carriageway
+        "Location",  # Urban or rural classification (binary: 0 or 1)
+        "Lanes",  # Number of lanes on the road
+        "Road Width",  # Average width of the road link
+        "Structure",  # Label indicating road structure (e.g., road, bridge, tunnel)
+        "Flood Type",  # Type of flood (e.g., surface, river)
+        "Flood Depth",  # Depth of flooding at the road link
+        # "damage_level",  # Level of damage (e.g., no, minor, moderate, extensive, severe)
+        "Damage Ratio",  # Damage ratio (min, max)
+        "Unit Asset Value",  # Unit repairing/maintenance cost (min, max)"
     ],
     "bounds": [
-        [Xs.length.min(), Xs.length.max()],  # 1.length
-        [
-            Xs.road_classification.min(),
-            Xs.road_classification.max(),
-        ],  # 2. road_classification
-        [Xs.form_of_way.min(), Xs.form_of_way.max()],  # 3. form_of_way
-        [Xs.trunk_road.min(), Xs.trunk_road.max()],  # 4. trunk_road
-        [Xs.urban.min(), Xs.urban.max()],  # 5. urban
-        [Xs.lanes.min(), Xs.lanes.max()],  # 6. number_of_lanes
-        [Xs.averageWidth.min(), Xs.averageWidth.max()],  # 7. averageWidth
-        [Xs.road_label.min(), Xs.road_label.max()],  # 8. road_structure
-        #  [Xs.LAD21CD.min(), Xs.LAD21CD.max()],  # 9. admin_area
-        [Xs.flood_type.min(), Xs.flood_type.max()],  # 10. flood_type
-        [Xs.flood_depth.min(), Xs.flood_depth.max()],  # 11. flood_depth
-        [Xs.damage_level.min(), Xs.damage_level.max()],  # 12. damage_level
-        [Xs.damage_ratio.min(), Xs.damage_ratio.max()],  # 13. damage_ratio
-        [Xs.damage_value.min(), Xs.damage_value.max()],  # 14.damage_value
+        [0, 1],
+        [0, 1],
+        [0, 1],
+        [0, 1],
+        [0, 1],
+        [0, 1],
+        [0, 1],
+        [0, 1],
+        [0, 1],
+        # [0, 1],
+        [0, 1],
+        [0, 1],
     ],
-    # "bounds": [
-    #     [0, 1],
-    #     [0, 1],
-    #     [0, 1],
-    #     [0, 1],
-    #     [0, 1],
-    #     [0, 1],
-    #     [0, 1],
-    #     [0, 1],
-    #     [0, 1],
-    #     [0, 1],
-    #     [0, 1],
-    #     [0, 1],
-    #     [0, 1],
-    # ],
 }
-# %%
+
 # Convert input and output data to NumPy arrays
 inputs = (
-    Xs.drop(columns=["damage_cost"]).to_numpy().astype(np.float64)
+    temp_Xs.drop(columns=["trunk_road", "damage_cost", "damage_level"])
+    .to_numpy()
+    .astype(np.float64)
 )  # Input variables
 outputs = (
-    Xs["damage_cost"].to_numpy().astype(np.float64)
+    temp_Xs["damage_cost"].to_numpy().astype(np.float64)
 )  # Target variable (damage costs)
 
 # Filter inputs and outputs to exclude NaN values
@@ -326,7 +308,6 @@ valid_indices = ~np.isnan(outputs)
 inputs = inputs[valid_indices, :]
 outputs = outputs[valid_indices]
 
-# %%
 # reshape inputs and outputs
 B = inputs.shape[0] // (D + 1)  # Calculate B from the number of rows
 N = (D + 1) * B  # Ensure it's a multiple of (D+1)
@@ -334,19 +315,11 @@ N = (D + 1) * B  # Ensure it's a multiple of (D+1)
 inputs = inputs[:N, :]
 outputs = outputs[:N]
 
-# %%
 # Perform Morris Sensitivity Analysis
 morris_results = morris.analyze(
     problem, inputs, outputs
 )  # Analyze sensitivity of inputs
 
-# Print results for Morris Sensitivity Analysis
-# print("Morris Mean (First-Order Effect):", morris_results["mu"])
-# print("Morris Variance (Total Effect):", morris_results["sigma"])
-# print("Morris Mean Confidence:", morris_results["mu_star"])
-# print("Variance Confidence Interval:", morris_results["mu_star_conf"])
-
-# %%
 # Create a DataFrame for sensitivity analysis results
 res_df = pd.DataFrame(
     {
@@ -360,64 +333,80 @@ res_df = pd.DataFrame(
 res_df
 # %%
 # plots
-# Example: Plotting Morris Mean and Variance
-morris_mean = morris_results["mu_star"] / (
-    morris_results["mu_star"].sum()
-)  # Morris mean (normalised)
-morris_variance = morris_results["sigma"]  # Morris variance
-
-# Set the style of the plots
-sns.set(style="whitegrid")
-
-# Create a figure and axis for both plots in one figure
-fig, axes = plt.subplots(1, 2, figsize=(16, 6))
-
-# Bar plot for Morris Mean (First-Order Effect)
-sns.barplot(x=morris_mean, y=problem["names"], ax=axes[0], color="blue")
-axes[0].set_title("Morris Sensitivity Analysis: Mean (First-Order Effect)", fontsize=14)
-axes[0].set_xlabel("Morris Mean", fontsize=12)
-axes[0].set_ylabel("Factors", fontsize=12)
-
-# Bar plot for Morris Variance (Total Effect)
-sns.barplot(x=morris_variance, y=problem["names"], ax=axes[1], color="red")
-axes[1].set_title("Morris Sensitivity Analysis: Variance (Total Effect)", fontsize=14)
-axes[1].set_xlabel("Morris Variance", fontsize=12)
-axes[1].set_ylabel("Factors", fontsize=12)
-
-# Adjust spacing between plots
-plt.tight_layout()
-
-# Show the plots
-plt.show()
-
-# %%
-# Data
-plt.rcParams["font.size"] = 12
+plt.rcParams["font.size"] = 14
 plt.rcParams["font.family"] = "Times New Roman"
 plt.rcParams["axes.titlesize"] = 16  # Title font size
 plt.rcParams["axes.labelsize"] = 14  # Axis labels
 plt.rcParams["xtick.labelsize"] = 14
 plt.rcParams["ytick.labelsize"] = 14
+# Example: Plotting Morris Mean and Variance
+morris_mean = morris_results["mu_star"] / (
+    morris_results["mu_star"].sum()
+)  # Morris mean (normalised)
+morris_variance = morris_results["sigma"]  # Morris variance
+# combine results into a single dataframe
+df = pd.DataFrame(
+    {"factor": problem["names"], "mean": morris_mean, "variance": morris_variance}
+)
+# sort values based on mean from high to low
+df = df.sort_values(by="mean", ascending=False)
+
+
+def create_gradient(values, cmap_name="Blues"):
+    """
+    values: numeric array (sorted high → low)
+    returns: list of RGBA colours mapped to values
+    """
+    cmap = plt.get_cmap(cmap_name)
+    norm = plt.Normalize(values.min(), values.max())
+    return [cmap(norm(v)) for v in values]
+
+
+mean_colors = create_gradient(df["mean"].values, cmap_name="Blues")
+var_colors = create_gradient(df["variance"].values, cmap_name="Reds")
+sns.set(style="whitegrid")
+fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+
+# ----- Mean Plot -----
+axes[0].barh(df["factor"], df["mean"], color=mean_colors)
+axes[0].invert_yaxis()  # highest at top
+axes[0].set_title("Morris Sensitivity: Mean (First-Order Effect)", fontsize=14)
+axes[0].set_xlabel("Normalised Morris Mean")
+axes[0].set_ylabel("Factors")
+
+# ----- Variance Plot -----
+axes[1].barh(df["factor"], df["variance"], color=var_colors)
+axes[1].invert_yaxis()
+axes[1].set_title(
+    "Morris Sensitivity: Variance (Interaction / Nonlinearity)", fontsize=14
+)
+axes[1].set_xlabel("Morris Variance")
+axes[1].set_ylabel("")
+plt.tight_layout()
+# plt.savefig(r"C:\Oxford\Research\DAFNI\local\papers\figures\morris_direct.tif", dpi=300)
+plt.show()
+
+# %%
+# Data
 parameters = [
-    "road_length",
-    "road_type",
-    "road_form",
-    "road_trunk",
-    "road_location",
-    "road_lane",
-    "road_width",
-    "road_structure",
-    "flood_type",
-    "flood_depth",
-    "damage_level",
-    "damage_ratio",
-    "damage_value",
+    "Road Length",
+    "Road Classification",
+    "Carriageway Type",
+    "Location",
+    "Lanes",
+    "Road Width",
+    "Structure",
+    "Flood Type",
+    "Flood Depth",
+    "Damage Level",
+    "Damage Ratio",
+    "Unit Asset Value",
 ]
 S1_abs = res_df["S1_abs"].values.tolist() / res_df["S1_abs"].values.sum()  # normalize
 ST = res_df["ST"].values.tolist()
 
 # Create scatter plot
-plt.figure(figsize=(8, 5))
+plt.figure(figsize=(6, 5))
 plt.scatter(S1_abs, ST, color="b", alpha=0.7, marker="x")
 
 # Annotate points
@@ -442,5 +431,97 @@ plt.grid(True, linestyle="--", alpha=0.6)
 
 # Show plot
 plt.tight_layout()
-# plt.savefig(r"C:\Oxford\Research\DAFNI\local\papers\figures\morris.tif", dpi=300)
+# plt.savefig(r"C:\Oxford\Research\DAFNI\local\papers\figures\mean_var_direct.tif", dpi=300)
+plt.show()
+
+
+# %%
+# Unified marker dictionary for all parameters
+marker_map = {
+    "Road Length": "o",
+    "Road Classification": "s",
+    "Carriageway Type": "D",
+    "Location": "^",
+    "Lanes": "v",
+    "Road Width": "<",
+    "Structure": ">",
+    "Flood Type": "p",
+    "Flood Depth": "*",
+    "Damage Level": "X",
+    "Damage Ratio": "h",
+    "Unit Asset Value": "P",
+}
+
+# Unified color dictionary for all parameters
+color_map = {
+    "Road Length": "#1f77b4",  # blue
+    "Road Classification": "#ff7f0e",  # orange
+    "Carriageway Type": "#2ca02c",  # green
+    "Location": "#d62728",  # red
+    "Lanes": "#9467bd",  # purple
+    "Road Width": "#8c564b",  # brown
+    "Structure": "#e377c2",  # pink
+    "Flood Type": "#7f7f7f",  # gray
+    "Flood Depth": "#bcbd22",  # olive
+    "Damage Level": "#17becf",  # cyan
+    "Damage Ratio": "#9edae5",  # light blue
+    "Unit Asset Value": "#aec7e8",  # lighter blue
+}
+plt.rcParams["font.family"] = "Times New Roman"
+plt.rcParams["font.size"] = 16
+plt.rcParams["axes.titlesize"] = 18
+plt.rcParams["axes.labelsize"] = 16
+plt.rcParams["legend.fontsize"] = 14
+
+
+# Parameters for DIRECT damages
+parameters = [
+    "Road Length",
+    "Road Classification",
+    "Carriageway Type",
+    "Location",
+    "Lanes",
+    "Road Width",
+    "Structure",
+    "Flood Type",
+    "Flood Depth",
+    #  "Damage Level",
+    "Damage Ratio",
+    "Unit Asset Value",
+]
+
+S1_abs = res_df["S1_abs"].values / res_df["S1_abs"].values.sum()
+ST = res_df["ST"].values
+
+plt.figure(figsize=(6.5, 6))
+handles = []
+
+for i, param in enumerate(parameters):
+    h = plt.scatter(
+        S1_abs[i],
+        ST[i],
+        marker=marker_map[param],
+        color=color_map[param],  # ← unified color mapping
+        alpha=0.9,
+        edgecolor="black",
+        linewidth=0.6,
+        s=70,
+        label=param,
+    )
+    handles.append(h)
+
+plt.xlabel(r"$\mu^*$")
+plt.ylabel(r"$\sigma$")
+plt.title("Severe Damage", pad=12, fontweight="bold")
+
+plt.grid(True, linestyle="--", alpha=0.6)
+# plt.legend(handles=handles, loc="lower right", borderaxespad=0.5)
+
+plt.tight_layout()
+plt.savefig(
+    # r"C:\Oxford\Research\DAFNI\local\papers\figures\for revision\morris_direct.tif",
+    r"C:\Oxford\Research\DAFNI\local\papers\figures\for revision\morris_direct_severe.tif",
+    dpi=300,
+    bbox_inches="tight",
+)
 plt.show()
