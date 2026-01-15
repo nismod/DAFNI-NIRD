@@ -4,28 +4,33 @@ channels:
   - nodefaults
 dependencies:
   - python=3.12
-  - black
+  - numpy
+  - pandas
   - geopandas>=1
+  - shapely
+  - pyproj
+  - fiona
+  - gdal
+  - rasterio
+  - snkit
+  - xarray
+  - python-igraph=0.11.*
+  - pyarrow
+  - requests
+  - scikit-learn
+  - tqdm
   - ipykernel
   - jupyter
+  - duckdb
+  - black
   - m2r2
   - make
   - mypy
-  - pandas
   - pre-commit
-  - pyarrow
   - pytest
   - pytest-cov
-  - python-igraph=0.11.*
-  - rasterio
-  - requests
   - ruff
-  - scikit-learn
-  - snkit
   - sphinx
-  - tqdm
-  - xarray
-  - gdal
   - pip
   - pip:
     - nismod-snail
