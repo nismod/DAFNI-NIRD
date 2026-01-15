@@ -165,62 +165,170 @@ def find_nearest_node(
     return nearest_node_dict  # zone_idx: node_idx
 
 
-def voc_func(
-    speed: float,
-) -> float:
-    """Calculate the Vehicle Operating Cost (VOC).
+# %%%
+# def operate_cost_func(vehicle_type, v_kmph):
+#     # fuel cost
+#     a, b, c, d = cons.fuel_litre_per_km[vehicle_type].values()
+#     L = a / v_kmph + b + c * v_kmph + d * v_kmph**2  # litre per km
+#     FC = L * 1.4  # GBP per km
 
-    Parameters
-    ----------
-    speed: float
-        The average flow speed: mph
-
-    Returns
-    -------
-    float
-        The unit vehicle operating cost: £/km
-    """
-    s = speed * cons.CONV_MILE_TO_KM  # km/hour
-    lpkm = 0.178 - 0.00299 * s + 0.0000205 * (s**2)  # fuel consumption (liter/km)
-    voc_per_km = (
-        140 * lpkm * cons.PENCE_TO_POUND
-    )  # average petrol cost: 140 pence/liter
-    return voc_per_km  # £/km
+#     # non-fuel cost (only counted for working purposes)
+#     a1, b1 = cons.non_fuel_pence_per_km[vehicle_type].values()
+#     NFC = a1 + b1 / v_kmph  # pence per km
+#     NFC = NFC / 100  # GBP per km
+#     return FC + NFC
 
 
-def cost_func(
-    time: float,
-    distance: float,
-    voc_per_km: float,
-    toll: float,
-) -> Tuple[float, float, float]:  # time: hour, distance: mph, voc: £/km
-    """Calculate the total travel cost.
+# def cost_function(vehicle_type, time_hr, distance_mile, toll):
+#     distance_km = distance_mile * cons.CONV_MILE_TO_KM
+#     vot = cons.vot_pound_per_hour[vehicle_type]
+#     if vehicle_type == "car":
+#         # logging.info("Private car")
+#         ave_occ = 1.1  # average occupancy (Vehicle mileage and occupancy, 2021)
+#         c_time = time_hr * ave_occ * vot
+#         c_operate = operate_cost_func(vehicle_type, distance_km / time_hr) * distance_km
+#         total_cost = c_time + c_operate + toll
+#         return total_cost, c_time, c_operate
 
-    Parameters
-    ----------
-    time: float
-        Travel time: hour
-    distance: float
-        Travel distance: mile
-    voc:
-        Vehicle operating cost: £/km
+#     elif vehicle_type == "lgv" or vehicle_type == "ogv":
+#         # logging.info("Freight vehicle")
+#         c_time = time_hr * vot  # asume single driver
+#         c_operate = operate_cost_func(vehicle_type, distance_km / time_hr) * distance_km
+#         total_cost = c_time + c_operate + toll
+#         return total_cost, c_time, c_operate
 
-    Returns
-    -------
-    cost: float
-        The total travel costs: £
-    c_time: float
-        The time-equivalent costs: £
-    c_operate: float
-        The vehicle operating costs/fuel costs: £
-    """
-    ave_occ = 1.06  # average car occupancy = 1.6
-    vot = 17.69  # value of time (VOT): 17.69 £/hour
-    d = distance * cons.CONV_MILE_TO_KM
-    c_time = time * ave_occ * vot
-    c_operate = d * voc_per_km
-    cost = time * ave_occ * vot + d * voc_per_km + toll
-    return cost, c_time, c_operate
+#     elif vehicle_type == "psv":
+#         # logging.info("Bus transport")
+#         # waiting_time_hr = 0.25  # 15 minutes average waiting time
+#         c_time = time_hr * vot
+#         c_fare = np.minimum(2 + 0.15 * distance_km, 4.5)
+#         total_cost = c_time + c_fare
+#         return total_cost, c_time, c_fare
+
+#     elif vehicle_type == "rail":
+#         # logging.info("Rail transport")
+#         # waiting_time_hr = 0.15  # 9 minutes average waiting time
+#         c_time = time_hr * vot
+#         c_fare = np.minimum(3 + 0.2 * distance_km, 250)
+#         total_cost = c_time + c_fare
+#         return total_cost, c_time, c_fare
+
+
+#     else:
+#         logging.info("Unknown vehicle type!")
+#         sys.exit(1)
+
+
+# %%
+def compute_costs_for_links(
+    road_links: pd.DataFrame,
+    vehicle_type: str,
+    # cols_out=("weight", "time_cost", "operating_cost"),
+    cols_out=("time_cost", "operating_cost"),
+    chunksize: int | None = None,
+    inplace: bool = True,
+    eps: float = 1e-6,
+):
+    def _process_block(df_block: pd.DataFrame):
+        # ensure floats for numeric ops
+        time_hr = df_block["time_hr"].to_numpy(dtype=float)
+        distance_km = (
+            df_block["length_mile"].to_numpy(dtype=float) * cons.CONV_MILE_TO_KM
+        )
+        # toll = df_block["average_toll_cost"].to_numpy(dtype=float)
+
+        # safe speed
+        v_kmph = distance_km / np.maximum(time_hr, eps)
+
+        # operate_cost per km vectorised (use values from cons)
+        a, b, c, d = tuple(cons.FUEL_LITRE_PER_KM[vehicle_type].values())
+        L = a / np.maximum(v_kmph, eps) + b + c * v_kmph + d * v_kmph**2
+        FC = L * 1.4  # GBP per km
+
+        a1, b1 = tuple(cons.NON_FUEL_PENCE_PER_KM[vehicle_type].values())
+        NFC = a1 + b1 / np.maximum(v_kmph, eps)  # pence per km
+        NFC = NFC / 100.0  # GBP per km
+
+        operate_cost_per_km = FC + NFC
+        operate_cost = operate_cost_per_km * distance_km  # GBP (vector)
+
+        # value of time: allow dict or function
+        if hasattr(cons, "VOT_POUND_PER_HOUR"):
+            vot = cons.VOT_POUND_PER_HOUR.get(vehicle_type, None)
+        else:
+            vot = None
+
+        if vot is None:
+            try:
+                vot = cons.VOT_POUND_PER_HOUR(vehicle_type)
+            except Exception as e:
+                raise RuntimeError(
+                    "Could not obtain VOT from cons (VOT_POUND_PER_HOUR)"
+                ) from e
+
+        # compute according to vehicle_type
+
+        if vehicle_type == "car":
+            ave_occ = 1.06
+            c_time = time_hr * ave_occ * vot
+            # total_cost = c_time + operate_cost + toll
+            out = np.vstack([c_time, operate_cost]).T
+
+        elif vehicle_type in ("lgv", "ogv"):
+            c_time = time_hr * vot
+            # total_cost = c_time + operate_cost + toll
+            out = np.vstack([c_time, operate_cost]).T
+
+        elif vehicle_type == "psv":
+            # waiting time and fare should be counted only once per od flow
+            c_time = time_hr * vot
+            # c_fare = np.minimum(2 + 0.15 * distance_km, 4.5)
+            # total_cost = c_time + c_fare
+            out = np.vstack([c_time, np.zeros_like(c_time)]).T
+
+        elif vehicle_type == "rail":
+            # waiting time and fare should be counted only once per od flow
+            c_time = time_hr * vot
+            # c_fare = np.minimum(3 + 0.2 * distance_km, 250)
+            # total_cost = c_time + c_fare
+            out = np.vstack([c_time, np.zeros_like(c_time)]).T
+
+        else:
+            raise ValueError(f"Unknown vehicle_type: {vehicle_type}")
+
+        return pd.DataFrame(out, index=df_block.index, columns=cols_out)
+
+    # choose chunking strategy
+    n = len(road_links)
+    if chunksize is None or chunksize >= n:
+        results = _process_block(road_links)
+        if inplace:
+            road_links.loc[:, cols_out] = results
+            return None
+        else:
+            return results
+
+    # chunked processing
+    if inplace:
+        # create columns to avoid reallocation during assignment
+        for c in cols_out:
+            if c not in road_links.columns:
+                road_links[c] = np.nan
+
+        for start in range(0, n, chunksize):
+            end = min(start + chunksize, n)
+            block_idx = slice(start, end)
+            block = road_links.iloc[block_idx]
+            res_block = _process_block(block)
+            road_links.loc[block.index, cols_out] = res_block.values
+        return None
+    else:
+        pieces = []
+        for start in range(0, n, chunksize):
+            end = min(start + chunksize, n)
+            block = road_links.iloc[start:end]
+            pieces.append(_process_block(block))
+        return pd.concat(pieces, axis=0).sort_index()
 
 
 def edge_reclassification_func(
@@ -368,70 +476,63 @@ def edge_init(
 
 
 def update_edge_speed(
-    combined_label: str,
-    total_flow: float,
-    initial_flow_speed: float,
-    min_flow_speed: float,
-    breakpoint_flow: float,
-    # flow_breakpoint_dict: Dict[str, float],
-) -> float:
-    """Create the speed-flow curves for different types of roads.
+    road_links: pd.DataFrame, inplace: bool = True
+) -> pd.DataFrame | None:
+    acc_flow = road_links["acc_flow"].to_numpy(dtype=float)  # vehicles per day
+    vp = acc_flow / 24.0  # vehicles per hour
+    initial_speed = road_links["initial_flow_speeds"].to_numpy(dtype=float)
+    min_speed = road_links["min_flow_speeds"].to_numpy(dtype=float)
+    breakpoint_flow = road_links["breakpoint_flows"].to_numpy(dtype=float)
 
-    Parameters
-    ----------
-    combined_label: str
-        The type or road links.
-    total_flow: float
-        The number of vehicles on road links (passneger-cars).
-    initial_flow_speed: float
-        The initial traffic speeds of road links (mph).
-    min_flow_speed: float
-        The minimum traffic speeds of road links (mph).
-    breakpoint_flow: float
-        The breakpoint flow after which speed start to decrease. (passenger-cars/hour/lane)
+    # label reduced speed factors
+    factor_map = {
+        "M": 0.033,
+        "A_dual": 0.033,
+        "A_single": 0.05,
+        "B": 0.05,
+        "B_dual": 0.05,
+        "B_single": 0.05,
+    }
+    # map to factors, default 0.0 for labels not in map
+    labels = road_links["combined_label"].astype(
+        object
+    )  # ensure dtype suitable for map
+    factor_series = labels.map(factor_map).fillna(0.0)
+    factor = factor_series.to_numpy(dtype=float)
 
-    Returns
-    -------
-    speed: float
-        The "real-time" traffic speeds on road links. (mph)
-    """
+    # compute reduction only where vp > breakpoint_flow
+    excess = vp - breakpoint_flow
+    excess = np.where(excess > 0.0, excess, 0.0)
+    reduction = factor * excess
+    speed = initial_speed - reduction
 
-    vp = total_flow / 24  # trips/hour
-    if combined_label == "M" and vp > breakpoint_flow:
-        speed = initial_flow_speed - 0.033 * (vp - breakpoint_flow)
-    elif combined_label == "A_single" and vp > breakpoint_flow:
-        speed = initial_flow_speed - 0.05 * (vp - breakpoint_flow)
-    elif combined_label == "A_dual" and vp > breakpoint_flow:
-        speed = initial_flow_speed - 0.033 * (vp - breakpoint_flow)
-    elif combined_label == "B" and vp > breakpoint_flow:
-        speed = initial_flow_speed - 0.05 * (vp - breakpoint_flow)
+    # enforce minimum
+    speed = np.maximum(speed, min_speed)
+
+    # write result
+    if inplace:
+        road_links["acc_speed"] = speed
+        return None
     else:
-        speed = initial_flow_speed
-    speed = max(speed, min_flow_speed)
-
-    return speed
+        return road_links.assign(acc_speed=speed)
 
 
 def create_igraph_network(
     road_links: gpd.GeoDataFrame,
+    vehicle_type: str,
 ) -> igraph.Graph:
     """Create an undirected igraph network."""
     # cols = road_links.columns.tolist()
-    road_links["edge_length_mile"] = (
-        road_links.geometry.length * cons.CONV_METER_TO_MILE
-    )
-    road_links["time_hr"] = 1.0 * road_links.edge_length_mile / road_links.acc_speed
-    road_links["voc_per_km"] = np.vectorize(voc_func, otypes=None)(road_links.acc_speed)
-    road_links[["weight", "time_cost", "operating_cost"]] = road_links.apply(
-        lambda row: pd.Series(
-            cost_func(
-                row["time_hr"],
-                row["edge_length_mile"],
-                row["voc_per_km"],
-                row["average_toll_cost"],
-            )
-        ),
-        axis=1,
+    road_links["length_mile"] = road_links.geometry.length * cons.CONV_METER_TO_MILE
+    road_links["time_hr"] = 1.0 * road_links.length_mile / road_links.acc_speed
+    compute_costs_for_links(
+        road_links=road_links,
+        vehicle_type=vehicle_type,
+        chunksize=np.maximum(road_links.shape[0] // 10, 100_000),
+        inplace=True,
+    )  # time_cost, operating_cost
+    road_links["weight"] = (
+        road_links.time_cost + road_links.operating_cost + road_links.average_toll_cost
     )
     graph_df = road_links[
         [
@@ -442,14 +543,17 @@ def create_igraph_network(
             "time_cost",
             "operating_cost",
             "average_toll_cost",
+            "length_mile",
         ]
     ]
+
     network = igraph.Graph.TupleList(
         graph_df.itertuples(index=False),
         edge_attrs=list(graph_df.columns)[2:],
         directed=False,
     )
-    index_map = {eid: idx for idx, eid in enumerate(network.es["e_id"])}
+    eids = list(network.es["e_id"])
+    index_map = dict(zip(eids, range(len(eids))))
     road_links["e_idx"] = road_links["e_id"].map(index_map)
     if len(road_links[road_links.e_idx.isnull()]) > 0:
         logging.info("Error: cannot find e_id in the network!")
@@ -711,6 +815,7 @@ def itter_path(
             "time": edges["time_cost"],
             "fuel": edges["operating_cost"],
             "toll": edges["average_toll_cost"],
+            "length_mile": edges["length_mile"],
         }
     ).set_index(
         "path"
@@ -750,6 +855,7 @@ def itter_path(
                 "fuel": "sum",
                 "time": "sum",
                 "toll": "sum",
+                "length_mile": "sum",
             }
         )
 
@@ -833,7 +939,8 @@ def itter_path(
         o.flow * COALESCE(a.adjust_r, 1.0) AS flow,
         o.fuel,
         o.time,
-        o.toll
+        o.toll,
+        o.length_mile
     FROM od_results_iter o
     LEFT JOIN od_adjustment a USING (origin, destination);
     """
@@ -856,6 +963,7 @@ def network_flow_model(
     db_path: str = "results.duckdb",
     iso_out_path: str = None,
     odpfc_out_path: str = None,
+    vehicle_type: str = "car",
 ) -> Tuple[gpd.GeoDataFrame, List[float]]:
     """Iteratively assign OD demand, update road attributes, and export results.
 
@@ -879,6 +987,8 @@ def network_flow_model(
         File path where the final isolated OD Parquet file will be written.
     odpfc_out_path : str
         File path where the per-path flow/cost Parquet file will be written.
+    vehicle_type : str, default ``"car"``
+        Vehicle type for cost calculations; one of ``["car", "lgv", "ogv", "psv", "rail"]``.
 
     Returns
     -------
@@ -899,7 +1009,7 @@ def network_flow_model(
     logging.info(f"The initial number of destinations: {number_of_destinations}")
 
     # starts
-    total_cost = cost_time = cost_fuel = cost_toll = 0
+    total_cost = cost_time = cost_fuel = cost_toll = cost_fare = 0
     initial_sumod = remain_od["Car21"].sum()
     assigned_sumod = 0
     iter_flag = 1
@@ -929,6 +1039,7 @@ def network_flow_model(
             fuel DOUBLE,
             time DOUBLE,
             toll DOUBLE,
+            fare DOUBLE,
         )
         """
     )
@@ -1181,8 +1292,44 @@ def network_flow_model(
         percentage_sumod = assigned_sumod / initial_sumod if initial_sumod > 0 else 1.0
 
         # append the adjusted per-OD rows (e_id) into odpfc (-> path)
+        # conn.execute(
+        #     """
+        #     INSERT INTO odpfc (
+        #         origin,
+        #         destination,
+        #         path,
+        #         flow,
+        #         fuel,
+        #         time,
+        #         toll,
+        #         length_mile
+        #     )
+        #     SELECT
+        #         origin,
+        #         destination,
+        #         e_id,
+        #         flow,
+        #         fuel,
+        #         time,
+        #         toll,
+        #         length_mile
+        #     FROM temp_flow_matrix
+        #     """
+        # )
+        if vehicle_type == "psv":
+            time_expr = f"time + 0.25 * {cons.VOT_POUND_PER_HOUR[vehicle_type]}"
+            fare_expr = f"LEAST(2.0 + 0.15 * length_mile * {cons.CONV_MILE_TO_KM}, 4.5)"
+        elif vehicle_type == "rail":
+            time_expr = f"time + 0.15 * {cons.VOT_POUND_PER_HOUR[vehicle_type]}"
+            fare_expr = (
+                f"LEAST(3.0 + 0.2  * length_mile * {cons.CONV_MILE_TO_KM}, 250.0)"
+            )
+        else:
+            time_expr = "time"
+            fare_expr = "0.0"
+
         conn.execute(
-            """
+            f"""
             INSERT INTO odpfc (
                 origin,
                 destination,
@@ -1190,19 +1337,22 @@ def network_flow_model(
                 flow,
                 fuel,
                 time,
-                toll
+                toll,
+                fare
             )
             SELECT
                 origin,
                 destination,
-                e_id,
+                e_id AS path,
                 flow,
                 fuel,
-                time,
-                toll
+                {time_expr} AS time,
+                toll,
+                {fare_expr} AS fare
             FROM temp_flow_matrix
             """
         )
+
         # compute costs
         iter_cost_fuel = (
             conn.execute(
@@ -1212,7 +1362,7 @@ def network_flow_model(
         )
         iter_cost_time = (
             conn.execute(
-                "SELECT COALESCE(SUM(flow * time), 0.0) FROM temp_flow_matrix"
+                f"SELECT COALESCE(SUM(flow * {time_expr}), 0.0) FROM temp_flow_matrix"
             ).fetchone()[0]
             or 0.0
         )
@@ -1222,11 +1372,18 @@ def network_flow_model(
             ).fetchone()[0]
             or 0.0
         )
+        iter_cost_fare = (
+            conn.execute(
+                f"SELECT COALESCE(SUM(flow * {fare_expr}), 0.0) FROM temp_flow_matrix"
+            ).fetchone()[0]
+            or 0.0
+        )
 
         cost_fuel += iter_cost_fuel
         cost_time += iter_cost_time
         cost_toll += iter_cost_toll
-        total_cost = cost_fuel + cost_time + cost_toll
+        cost_fare += iter_cost_fare
+        total_cost = cost_fuel + cost_time + cost_toll + cost_fare
 
         # aggregate edge flows from edge_flows table
         temp_edge_flow = conn.execute(
@@ -1254,16 +1411,7 @@ def network_flow_model(
 
         # Recalculate edge speeds for edges that changed (vectorized if possible)
         logging.info("Updating edge speeds: ")
-        road_links["acc_speed"] = road_links.progress_apply(
-            lambda x: update_edge_speed(
-                x["combined_label"],
-                x["acc_flow"],
-                x["initial_flow_speeds"],
-                x["min_flow_speeds"],
-                x["breakpoint_flows"],
-            ),
-            axis=1,
-        )
+        update_edge_speed(road_links, inplace=True)
         road_links.drop(columns=["flow"], inplace=True)
 
         # update remain od using DuckDB
@@ -1396,7 +1544,8 @@ def network_flow_model(
                     SUM(flow) AS flow,
                     MIN(fuel) AS operating_cost_per_flow,
                     MIN(time) AS time_cost_per_flow,
-                    MIN(toll) AS toll_cost_per_flow
+                    MIN(toll) AS toll_cost_per_flow,
+                    MIN(fare) AS fare_cost_per_flow
                 FROM odpfc
                 GROUP BY origin, destination, path
             ) TO '{odpfc_out_path}' (FORMAT PARQUET);
