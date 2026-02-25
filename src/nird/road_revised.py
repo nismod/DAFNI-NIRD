@@ -563,7 +563,7 @@ def create_igraph_network(
 
 
 def update_network_structure(
-    num_of_edges: int,
+    num_of_edges: int,  # initial network
     network: igraph.Graph,
     temp_edge_flow: pd.DataFrame,
     road_links: gpd.GeoDataFrame,
@@ -595,7 +595,10 @@ def update_network_structure(
     ratio = temp_edge_flow["acc_capacity"] / temp_edge_flow["current_capacity"].replace(
         0, np.nan
     )
-    mask = (temp_edge_flow["acc_capacity"] < 1) | (ratio < 0.001)
+    # considered fully utilised if remaining capacity < 1 vehicle
+    # or < 1% of original capacity
+    mask = (temp_edge_flow["acc_capacity"] < 1) | (ratio < 0.01)
+
     # drop fully utilised edges from the network
     zero_capacity_edges = set(
         temp_edge_flow.loc[
