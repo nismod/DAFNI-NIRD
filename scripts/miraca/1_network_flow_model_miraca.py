@@ -180,4 +180,4 @@ if __name__ == "__main__":
         )
     except (IndexError, NameError):
         logging.info("Please enter num_of_chunk and num_of_cpu!")
-    # main(1, 1)
+    # main(1, 1, psv.pq, psv)
