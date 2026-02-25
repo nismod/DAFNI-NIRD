@@ -26,6 +26,16 @@ def main(
     sample_stride=1,
 ):
     start_time = time.time()
+    # database
+    db_path = base_path / "dbs" / f"macc_{year}_{ssp}.duckdb"
+    logging.info(f"Database path: {db_path}")
+
+    # outpath
+    out_path = macc_path / "outputs"
+    out_path.mkdir(parents=True, exist_ok=True)
+    iso_out_path = out_path / f"isolation_{year}_ssp{ssp}.pq"
+    odpfc_out_path = out_path / f"odpfc_{year}_ssp{ssp}.pq"
+
     # model parameters
     with open(base_path / "parameters" / "flow_breakpoint_dict.json", "r") as f:
         flow_breakpoint_dict = json.load(f)
@@ -42,6 +52,8 @@ def main(
     road_link_file = gpd.read_parquet(
         base_path / "networks" / "GB_road_links_with_bridges.gpq"
     )
+    with open(macc_path / "inputs" / "od" / "nd_map.json", "rb") as f:
+        nd_map = json.load(f)
 
     # od matrix (2021, 2050-SSP1, SSP2, SSP3, SSP4, SSP5)
     if year == 2021:
@@ -49,6 +61,8 @@ def main(
     else:
         od_path = macc_path / "inputs" / "od" / f"od_node_gb_{year}_SSP{ssp}.pq"
     od_node = pd.read_parquet(od_path, engine="fastparquet")
+    od_node["origin_node"] = od_node["origin_node"].map(nd_map)
+    od_node["destination_node"] = od_node["destination_node"].map(nd_map)
     od_node.rename(columns={f"outflow_{year}": "Car21"}, inplace=True)
     od_node["Car21"] = od_node["Car21"] * 2
 
@@ -78,8 +92,8 @@ def main(
     logging.info("Running flow simulation...")
     (
         road_links,
-        isolation,
-        odpfc,
+        # isolation,
+        # odpfc,
         _,
     ) = func.network_flow_model(
         road_links,
@@ -88,55 +102,13 @@ def main(
         flow_breakpoint_dict,
         num_of_chunk,
         num_of_cpu,
-    )
-
-    # isolation
-    isolation_df = pd.DataFrame(
-        isolation,
-        columns=[
-            "origin_node",
-            "destination_node",
-            "flow",
-        ],
-    )
-    isolation_df = isolation_df[
-        (isolation_df.origin_node != isolation_df.destination_node)
-        & (isolation_df.flow > 0)
-    ].reset_index(drop=True)
-
-    # odpfc
-    odpfc_df = pd.DataFrame(
-        odpfc,
-        columns=[
-            "origin_node",
-            "destination_node",
-            "path_idx",
-            "path",
-            "flow",
-            "operating_cost_per_flow",
-            "time_cost_per_flow",
-            "toll_cost_per_flow",
-        ],
-    )
-    odpfc_df.drop(columns=["path_idx"], inplace=True)
-    odpfc_df.path = odpfc_df.path.apply(tuple)
-    odpfc_df = odpfc_df.groupby(
-        by=["origin_node", "destination_node", "path"], as_index=False
-    ).agg(
-        {
-            "flow": "sum",
-            "operating_cost_per_flow": "first",
-            "time_cost_per_flow": "first",
-            "toll_cost_per_flow": "first",
-        }
+        od_path=db_path,
+        iso_out_path=iso_out_path,
+        odpfc_out_path=odpfc_out_path,
     )
 
     # export files
-    out_path = macc_path / "outputs"
-    out_path.mkdir(parents=True, exist_ok=True)
     road_links.to_parquet(out_path / f"edge_flow_{year}_SSP{ssp}.gpq")
-    isolation.to_parquet(out_path / f"trip_isolation_{year}_SSP{ssp}.pq")
-    odpfc_df.to_parquet(out_path / f"odpfc_{year}_SSP{ssp}.pq")
     logging.info(f"The total simulation time: {time.time() - start_time}")
 
 

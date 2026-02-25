@@ -84,6 +84,15 @@ def main(
     logging.info("Start...")
     db_path = base_path / "dbs" / f"recovery_{depth_key}_{flood_key}.duckdb"
     logging.info(f"Database path is: {db_path}")
+    out_path = (
+        base_path.parent
+        / "results"
+        / "rerouting_analysis"
+        / "revision"
+        / str(depth_key)
+        / str(flood_key)
+    )
+    out_path.mkdir(parents=True, exist_ok=True)
 
     # Load network parameters
     with open(base_path / "parameters" / "flow_breakpoint_dict.json", "r") as f:
@@ -104,7 +113,8 @@ def main(
         / "disruption_analysis"
         / "revision"
         / "od"
-        / f"odpfc_{depth_key}_{flood_key}.pq"
+        / f"odpfc_{depth_key}_{flood_key}.pq",
+        engine="fastparquet",
     )
     disrupted_candidates["od_id"] = disrupted_candidates.index  # numbering od pairs
     # Load road links with damage (e.g., flood depth and damage level)
@@ -127,6 +137,8 @@ def main(
     # Load link recovery scenarios (both capacity and speed)
     for scenario_idx in range(len(scenarios)):
         logging.info(f"Rerouting Analysis on Scenario-{scenario_idx} of recovery...")
+        iso_out_path = out_path / f"trip_isolations_{scenario_idx}.pq"
+
         event_day = conditions[scenario_idx]
         logging.info(f"Updating edge capacities on D-{scenario_idx} of recovery...")
         road_links["acc_capacity"] = road_links["current_capacity"]
@@ -289,15 +301,13 @@ def main(
         ].reset_index(drop=True)
         network, valid_road_links = func.create_igraph_network(valid_road_links)
 
-        # !!! make sure to pass disrupted flow for rerouting analysis
+        # make sure to pass disrupted flow for rerouting analysis
         disrupted_od.rename(columns={"disrupted_flow": "Car21"}, inplace=True)
 
         # Run flow model
         logging.info("Running flow simulation...")
         (
             valid_road_links,
-            isolation,
-            _,
             (post_time, post_operate, post_toll, total_post_cost),
         ) = func.network_flow_model(
             valid_road_links,  # update this one
@@ -309,6 +319,7 @@ def main(
             num_of_chunk,
             num_of_cpu,
             db_path,
+            iso_out_path=iso_out_path,
         )
 
         # estimate rerouting cost matrix
@@ -327,16 +338,6 @@ def main(
         )
 
         logging.info("Saving results to disk...")
-        out_path = (
-            base_path.parent
-            / "results"
-            / "rerouting_analysis"
-            / "revision"
-            / str(depth_key)
-            / str(flood_key)
-        )
-        out_path.mkdir(parents=True, exist_ok=True)
-
         # rerouting costs
         cDict[scenario_idx] = [rer_time, rer_operate, rer_toll, rerouting_cost]
         cost_df = pd.DataFrame.from_dict(
@@ -346,24 +347,6 @@ def main(
         ).reset_index()
         cost_df.rename(columns={"index": "scenario"}, inplace=True)
         cost_df.to_csv(out_path / f"rerouting_cost_{scenario_idx}.csv", index=False)
-
-        # trip isolations
-        isolation_df = pd.DataFrame(
-            isolation,
-            columns=[
-                "origin_node",
-                "destination_node",
-                "Car21",
-            ],
-        )
-        isolation_df = isolation_df[
-            (isolation_df.origin_node != isolation_df.destination_node)
-            & (isolation_df.Car21 > 0)
-        ].reset_index()
-        isolation_df.to_csv(
-            out_path / f"trip_isolations_{scenario_idx}.csv",
-            index=False,
-        )
 
         # edge flows
         road_links = road_links.set_index("e_id")
