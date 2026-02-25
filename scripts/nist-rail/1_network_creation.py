@@ -6,7 +6,7 @@ import snkit.network as snx
 from collections import defaultdict
 
 import warnings
-from utils import create_network_from_nodes_and_edges
+from nird.utils import create_network_from_nodes_and_edges
 
 warnings.simplefilter("ignore")
 
