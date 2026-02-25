@@ -83,14 +83,16 @@ def clip_features(
     """
 
     logging.info(f"Clipping features based on {raster_key}...")
-    clips = gpd.read_file(clip_path, engine="pyogrio")  # grid's extent (vector)
-    if features.crs != clips.crs:
+    clipper = gpd.read_file(clip_path, engine="pyogrio")  # grid's extent (vector)
+    if features.crs != clipper.crs:
         logging.info("Projecting Feature CRS to match GRID CRS...")
-        features = features.to_crs(clips.crs)
-
-    clipped_features = gpd.sjoin(features, clips, how="inner", predicate="intersects")
-    clipped_features = clipped_features[features.columns]
+        features = features.to_crs(clipper.crs)
+    clipper = clipper.dissolve()
+    clipped_features = gpd.clip(features, clipper)
+    # clipped_features = gpd.sjoin(features, clips, how="inner", predicate="intersects")
+    # clipped_features = clipped_features[features.columns]
     clipped_features.reset_index(drop=True, inplace=True)
+
     return clipped_features
 
 
@@ -268,7 +270,8 @@ def intersections_with_damage(
     """
 
     # Clip road links with features in the provided vector file
-    clipped_features = clip_features(road_links, clip_path, flood_key)
+    features = road_links.copy()
+    clipped_features = clip_features(features, clip_path, flood_key)
     if clipped_features.empty:
         logging.info("Warning: Clip features is None!")
         return None
