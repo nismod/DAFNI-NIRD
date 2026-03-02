@@ -816,8 +816,8 @@ def itter_path(
     road_caps_df = road_links[["e_id", "acc_capacity"]]
     conn.execute("DROP TABLE IF EXISTS od_results_iter")  # reset table
     conn.execute("DROP TABLE IF EXISTS edge_flows")  # reset table
-    conn.register("edges_tmp", edges_df)
-    conn.register("road_caps_tmp", road_caps_df)
+    conn.register("edges_tmp", edges_df)  # edge attributes
+    conn.register("road_caps_tmp", road_caps_df)  # road capacities
     conn.execute("CREATE OR REPLACE TEMP TABLE edges_attr AS SELECT * FROM edges_tmp")
     conn.execute(
         "CREATE OR REPLACE TEMP TABLE road_caps AS SELECT * FROM road_caps_tmp"
@@ -846,10 +846,12 @@ def itter_path(
             t.origin,
             t.destination,
             t.flow,
-            u.path AS path_idx,
+            list_extract(t.path, u.ord) AS path_idx,
             u.ord AS path_ord
-        FROM {source_table} t,
-             UNNEST(t.path) WITH ORDINALITY AS u(path, ord);
+        FROM {source_table} t
+        CROSS JOIN LATERAL (
+            SELECT UNNEST(range(1, array_length(t.path) + 1)) AS ord
+        ) AS u;
         """
     )
     conn.execute(
