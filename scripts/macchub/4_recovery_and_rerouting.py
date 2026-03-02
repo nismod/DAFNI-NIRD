@@ -289,7 +289,9 @@ def main(
         valid_road_links = road_links[
             (road_links["acc_capacity"] > 0) & (road_links["acc_speed"] > 0)
         ].reset_index(drop=True)
-        network, valid_road_links = func.create_igraph_network(valid_road_links)
+        network, valid_road_links = func.create_igraph_network(
+            valid_road_links, vehicle_type="car"
+        )
 
         # make sure to pass disrupted flow for rerouting analysis
         disrupted_od.rename(columns={"disrupted_flow": "Car21"}, inplace=True)

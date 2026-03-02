@@ -222,7 +222,7 @@ def find_nearest_node(
 # %%
 def compute_costs_for_links(
     road_links: pd.DataFrame,
-    vehicle_type: str,
+    vehicle_type: str = "car",
     # cols_out=("weight", "time_cost", "operating_cost"),
     cols_out=("time_cost", "operating_cost"),
     chunksize: int | None = None,
@@ -519,7 +519,7 @@ def update_edge_speed(
 
 def create_igraph_network(
     road_links: gpd.GeoDataFrame,
-    vehicle_type: str,
+    vehicle_type: str = "car",
 ) -> igraph.Graph:
     """Create an undirected igraph network."""
     # cols = road_links.columns.tolist()
