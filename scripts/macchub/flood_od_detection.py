@@ -28,6 +28,7 @@ def find_flood_links(path: List, disrupted_set: Set) -> Optional[Tuple]:
 
 # %%
 base_od = pd.read_parquet(macc_path / "damages" / "od" / "odpfc_2050_ssp5.pq")
+base_od["path"] = base_od["path"].str.findall(r"[\w_]+")
 out_path = macc_path.parent / "outputs"
 out_path.mkdir(parents=True, exist_ok=True)
 
