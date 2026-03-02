@@ -266,16 +266,7 @@ def main(
         )
 
         logging.info("Updating road speed limits...")
-        road_links["acc_speed"] = road_links.apply(
-            lambda x: func.update_edge_speed(
-                x["combined_label"],  # constant
-                x["acc_flow"],  # variable
-                x["initial_flow_speeds"],  # constant
-                x["min_flow_speeds"],  # constant
-                x["breakpoint_flows"],  # constant
-            ),
-            axis=1,
-        )
+        func.update_edge_speed(road_links, inplace=True)
         if event_day == 1:  # apply speed constraint to every road
             road_links["acc_speed"] = road_links[["acc_speed", "max_speed"]].min(axis=1)
         if (
@@ -376,7 +367,7 @@ if __name__ == "__main__":
     )
     try:
         event_key, num_of_chunk, num_of_cpu = sys.argv[1:]
-        main(int(event_key), int(num_of_chunk), int(num_of_cpu))
+        main(event_key, int(num_of_chunk), int(num_of_cpu))
     except (IndexError, ValueError):
         logging.info("Please provide inputs: event_key, num_of_chunk, and num_of_cpu!")
         sys.exit(1)
