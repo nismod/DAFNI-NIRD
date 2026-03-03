@@ -90,7 +90,7 @@ def main(
         / "outputs"
         / "rerouting_analysis"
         / "dbs"
-        / f"recovery_{event_key}.duckdb"
+        / f"recovery_{event_key}_{scenario_idx}.duckdb"
     )
     logging.info(f"Database path is: {db_path}")
     out_path = macchub_path.parent / "outputs" / "rerouting_analysis" / str(event_key)
