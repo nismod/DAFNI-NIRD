@@ -223,12 +223,32 @@ def find_nearest_node(
 def compute_costs_for_links(
     road_links: pd.DataFrame,
     vehicle_type: str = "car",
-    # cols_out=("weight", "time_cost", "operating_cost"),
     cols_out=("time_cost", "operating_cost"),
     chunksize: int | None = None,
     inplace: bool = True,
     eps: float = 1e-6,
 ):
+    """Compute costs for each road link based on the vehicle type.
+
+    Parameters
+    ----------
+    road_links: pd.DataFrame
+        DataFrame containing road link attributes, including 'time_hr' and 'length_mile'.
+    vehicle_type: str
+        Type of vehicle for cost calculation (e.g., 'car', 'lgv', 'ogv', 'psv', 'rail').
+    cols_out: tuple of str
+        Names of the output columns for time cost and operating cost.
+    chunksize: int or None
+        Number of rows to process in each chunk; if None, process all at once.
+    inplace: bool
+    eps: float
+            Small constant to prevent division by zero in speed calculations.
+
+    Returns
+    -------
+    pd.DataFrame or None
+    """
+
     def _process_block(df_block: pd.DataFrame):
         # ensure floats for numeric ops
         time_hr = df_block["time_hr"].to_numpy(dtype=float)
@@ -374,8 +394,6 @@ def edge_initial_speed_func(
     -------
     road_links: pd.DataFrame
         with speed information
-    initial_speed_dict: Dict
-        initial vehicle operating speed of existing road links
     """
 
     assert "combined_label" in road_links.columns, "combined_label column not exists!"
@@ -430,6 +448,9 @@ def edge_init(
     Parameters
     ----------
     road_links: gpd.GeoDataFrame
+        Links of the road network.
+    flow_breakpoint_dict: Dict
+        The breakpoint flow beyond which vehicle speed start to decrease.
     capacity_plph_dict: Dict
         The designed edge capacity (per lane per hour).
     free_flow_speed_dict: Dict
@@ -477,6 +498,21 @@ def edge_init(
 def update_edge_speed(
     road_links: pd.DataFrame, inplace: bool = True
 ) -> pd.DataFrame | None:
+    """
+    Update the edge speeds based on accumulated flows.
+
+    Parameters
+    ----------
+    road_links: pd.DataFrame
+        DataFrame containing road link attributes.
+    inplace: bool
+        If True, update the DataFrame in place; otherwise, return a new DataFrame.
+
+    Returns
+    -------
+    pd.DataFrame or None
+        Updated road links DataFrame if inplace=False, otherwise None.
+    """
     acc_flow = road_links["acc_flow"].to_numpy(dtype=float)  # vehicles per day
     vp = acc_flow / 24.0  # vehicles per hour
     initial_speed = road_links["initial_flow_speeds"].to_numpy(dtype=float)
@@ -760,30 +796,7 @@ def itter_path(
     conn=None,
     temp_flow_table: Optional[str] = None,
 ) -> None:
-    """Explode stored paths in chunks and accumulate edge flows in DuckDB.
-
-    Parameters
-    ----------
-    network : igraph.Graph
-        Graph whose edge attributes provide per-edge cost and identifiers.
-    road_links : gpd.GeoDataFrame
-        GeoDataFrame containing ``e_id`` plus capacity and speed attributes.
-    temp_flow_matrix : Optional[pd.DataFrame], default None
-        In-memory DataFrame of OD paths; used when ``temp_flow_table`` is not provided.
-    num_of_chunk : Optional[int], default None
-        Desired number of chunks to split ``temp_flow_matrix`` into (upper bound).
-    db_path : str, default ``"results.duckdb"``
-        Path to the DuckDB database for temporary tables.
-    conn : Optional[duckdb.DuckDBPyConnection]
-        Existing DuckDB connection; a new one is opened if ``None``.
-    temp_flow_table : Optional[str], default None
-        Name of a DuckDB table that stores the same columns as ``temp_flow_matrix``.
-
-    Returns
-    -------
-    None
-        Results are written into DuckDB tables ``temp_flow_matrix`` and related temps.
-    """
+    """Iteratively update the OD matrix and edge flows based on the current network structure."""
 
     if temp_flow_table is None and temp_flow_matrix is None:
         raise ValueError("Either temp_flow_matrix or temp_flow_table must be provided.")
@@ -854,6 +867,21 @@ def itter_path(
         ) AS u;
         """
     )
+
+    """
+    Example:
+    origin | destination | flow | path_idx |
+    -------|-------------|------|----------|
+    A      | B           | 100  | [1, 5, 9]|
+
+    -> exploded_paths:
+    origin | destination | flow | path_idx | path_ord |
+    -------|-------------|------|----------|---------|
+    A      | B           | 100  | 1        | 1       |
+    A      | B           | 100  | 5        | 2       |
+    A      | B           | 100  | 9        | 3       |
+
+    """
     conn.execute(
         """
         CREATE TABLE od_results_iter AS
@@ -872,6 +900,20 @@ def itter_path(
         GROUP BY x.origin, x.destination;
         """
     )
+    """
+    Example:
+     origin | destination | flow | path_idx | path_ord | fuel | time | toll | length_mile
+    -------|-------------|------|----------|---------|------|------|------|-------------
+    A      | B           | 100  | 1        | 1       | 10   | 0.5  | 2    | 5
+    A      | B           | 100  | 5        | 2       | 20   | 1.0  | 0    | 3
+    A      | B           | 100  | 9        | 3       | 15   | 0.8  | 1    | 4
+
+    -> od_results:
+    origin | destination | flow | e_id       | fuel | time | toll | length_mile
+    -------|-------------|------|------------|------|------|------|-------------
+    A      | B           | 100  | [1, 5, 9]  | 45   | 2.3  | 3    | 12
+    """
+
     conn.execute(
         """
         CREATE TABLE edge_flows AS
@@ -889,6 +931,34 @@ def itter_path(
         GROUP BY e.e_id, x.origin, x.destination;
         """
     )
+
+    """
+    Example:
+    origin | destination | flow | path_idx | path_ord
+    -------|-------------|------|----------|---------
+    A      | B           | 100  | 1        | 1
+    A      | B           | 100  | 5        | 2
+    A      | B           | 100  | 9        | 3
+    -> join with edge attributes:
+    origin | destination | flow | path_idx | path_ord | e_id
+    -------|-------------|------|----------|---------|------
+    A      | B           | 100  | 1        | 1       | 1
+    A      | B           | 100  | 5        | 2       | 5
+    A      | B           | 100  | 9        | 3       | 9
+    -> join with road_caps:
+    origin | destination | flow | path_idx | path_ord | e_id | acc_capacity
+    -------|-------------|------|----------|---------|------|-------------
+    A      | B           | 100  | 1        | 1       | 1    | 500
+    A      | B           | 100  | 5        | 2       | 5    | 300
+    A      | B           | 100  | 9        | 3       | 9    | 200
+
+    -> edge_flows (group by e_id, origin, destination):
+    e_id | origin | destination | acc_capacity | flow
+    -----|--------|-------------|--------------|------
+    1    | A      | B           | 500          | 100
+    5    | A      | B           | 300          | 100
+    9    | A      | B           | 200          | 100
+    """
     conn.execute("DROP TABLE IF EXISTS exploded_paths")
     if source_table == "temp_flow_matrix_input_mem":
         conn.execute("DROP TABLE IF EXISTS temp_flow_matrix_input_mem")
@@ -935,6 +1005,20 @@ def itter_path(
     GROUP BY b.origin, b.destination;
     """
     )
+    """
+    Example:
+    e_id | origin | destination | acc_capacity | flow | adsjust_r
+    -----|--------|-------------|--------------|------|---------
+    1    | A      | B           | 500          | 100  | min(500/100, 1) = 1.0
+    5    | A      | B           | 300          | 100  | min(300/100, 1) = 1.0
+    9    | A      | B           | 200          | 100  | min(200/100, 1) = 1.0
+
+    od_adjustment:
+    origin | destination | adjust_r
+    -------|-------------|---------
+    A      | B           | 1.0
+
+    """
 
     # 4) final result
     conn.execute(
@@ -953,6 +1037,9 @@ def itter_path(
     LEFT JOIN od_adjustment a USING (origin, destination);
     """
     )
+    """
+    Example: -> od_results with od_adjustment
+    """
     logging.info("Complete creating temp_flow_matrix table in Duckdb!")
 
     if temp_flow_table is not None:
