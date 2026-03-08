@@ -14,7 +14,6 @@ import json
 import warnings
 
 warnings.simplefilter("ignore")
-base_path = Path(load_config()["paths"]["DAFNI"])
 nist_path = Path(load_config()["paths"]["NIST"])
 
 
@@ -26,7 +25,7 @@ def main(
     sample_stride=1,
 ):
     start_time = time.time()
-    db_path = base_path / "dbs" / f"nist_{future_year}_{pop_scenario}.duckdb"
+    db_path = nist_path / "dbs" / f"nist_{future_year}_{pop_scenario}.duckdb"
     logging.info(f"Database path is: {db_path}")
 
     # outpath
@@ -36,15 +35,15 @@ def main(
     odpfc_out_path = out_path / f"odpfc_{future_year}_{pop_scenario}.pq"
 
     # model parameters
-    with open(base_path / "parameters" / "flow_breakpoint_dict.json", "r") as f:
+    with open(nist_path / "parameters" / "flow_breakpoint_dict.json", "r") as f:
         flow_breakpoint_dict = json.load(f)
-    with open(base_path / "parameters" / "flow_cap_plph_dict.json", "r") as f:
+    with open(nist_path / "parameters" / "flow_cap_plph_dict.json", "r") as f:
         flow_capacity_dict = json.load(f)
-    with open(base_path / "parameters" / "free_flow_speed_dict.json", "r") as f:
+    with open(nist_path / "parameters" / "free_flow_speed_dict.json", "r") as f:
         free_flow_speed_dict = json.load(f)
-    with open(base_path / "parameters" / "min_speed_cap.json", "r") as f:
+    with open(nist_path / "parameters" / "min_speed_cap.json", "r") as f:
         min_speed_dict = json.load(f)
-    with open(base_path / "parameters" / "urban_speed_cap.json", "r") as f:
+    with open(nist_path / "parameters" / "urban_speed_cap.json", "r") as f:
         urban_speed_dict = json.load(f)
 
     # network links (England only)
@@ -88,7 +87,7 @@ def main(
         flow_breakpoint_dict,
         num_of_chunk,
         num_of_cpu,
-        od_path=db_path,
+        db_path=db_path,
         iso_out_path=iso_out_path,
         odpfc_out_path=odpfc_out_path,
         capacity_mode=True,
