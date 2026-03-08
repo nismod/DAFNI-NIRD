@@ -14,19 +14,26 @@ import json
 import warnings
 
 warnings.simplefilter("ignore")
-base_path = Path(load_config()["paths"]["soge_clusters"])
+base_path = Path(load_config()["paths"]["DAFNI"])
 nist_path = Path(load_config()["paths"]["NIST"])
 
 
 def main(
-    year: int,
+    future_year,  # 21, 30, 50
+    pop_scenario,  # ppp, hhh
     num_of_chunk: int,
     num_of_cpu: int,
     sample_stride=1,
 ):
     start_time = time.time()
-    db_path = base_path / "dbs" / f"nist_{year}.duckdb"
+    db_path = base_path / "dbs" / f"nist_{future_year}_{pop_scenario}.duckdb"
     logging.info(f"Database path is: {db_path}")
+
+    # outpath
+    out_path = nist_path.parent / "outputs"
+    out_path.mkdir(parents=True, exist_ok=True)
+    iso_out_path = out_path / f"isolation_{future_year}_{pop_scenario}.pq"
+    odpfc_out_path = out_path / f"odpfc_{future_year}_{pop_scenario}.pq"
 
     # model parameters
     with open(base_path / "parameters" / "flow_breakpoint_dict.json", "r") as f:
@@ -42,19 +49,17 @@ def main(
 
     # network links (England only)
     road_link_file = gpd.read_parquet(
-        nist_path / "inputs" / "networks" / "England_road_links_with_bridges.gpq"
+        nist_path / "networks" / "England_road_links_with_bridges.gpq"
     )
 
     # od matrix (2021, 2030, 2050)
-    od_node = pd.read_csv(nist_path / "inputs" / "od" / f"od_node_{year}_england.csv")
-    od_node.rename(columns={f"outflow_{year}": "Car21"}, inplace=True)
-    od_node["Car21"] = od_node["Car21"] * 2
+    od_node = pd.read_parquet(nist_path / "od" / f"od_node_{pop_scenario}_estimates.pq")
+    od_node["Car21"] = od_node[f"Car{future_year}"] * 2
+    logging.info(f"\n{od_node}")
+    logging.info(f"total flows: {od_node.Car21.sum()}")
 
     if sample_stride > 1:
         logging.info(f"For testing, sampling every {sample_stride} flows")
-
-    logging.info(f"\n{od_node}")
-    logging.info(f"total flows: {od_node.Car21.sum()}")
 
     # initialise road links
     logging.info("Initialising road links...")
@@ -75,8 +80,6 @@ def main(
     logging.info("Running flow simulation...")
     (
         road_links,
-        isolation,
-        odpfc,
         _,  # cList
     ) = func.network_flow_model(
         road_links,
@@ -85,54 +88,14 @@ def main(
         flow_breakpoint_dict,
         num_of_chunk,
         num_of_cpu,
-        db_path,
-    )
-
-    # isolation
-    isolation_df = pd.DataFrame(
-        isolation,
-        columns=[
-            "origin_node",
-            "destination_node",
-            "flow",
-        ],
-    )
-    isolation_df = isolation_df[
-        (isolation_df.origin_node != isolation_df.destination_node)
-        & (isolation_df.flow > 0)
-    ].reset_index(drop=True)
-
-    # odpfc
-    odpfc_df = pd.DataFrame(
-        odpfc,
-        columns=[
-            "origin_node",
-            "destination_node",
-            "path",
-            "flow",
-            "operating_cost_per_flow",
-            "time_cost_per_flow",
-            "toll_cost_per_flow",
-        ],
-    )
-    odpfc_df.path = odpfc_df.path.apply(tuple)
-    odpfc_df = odpfc_df.groupby(
-        by=["origin_node", "destination_node", "path"], as_index=False
-    ).agg(
-        {
-            "flow": "sum",
-            "operating_cost_per_flow": "first",
-            "time_cost_per_flow": "first",
-            "toll_cost_per_flow": "first",
-        }
+        od_path=db_path,
+        iso_out_path=iso_out_path,
+        odpfc_out_path=odpfc_out_path,
+        capacity_mode=True,
     )
 
     # export files
-    out_path = nist_path / "outputs"
-    out_path.mkdir(parents=True, exist_ok=True)
-    isolation_df.to_csv(out_path / f"trip_isolation_{year}.csv")
-    road_links.to_parquet(out_path / f"edge_flow_{year}.gpq")
-    odpfc_df.to_parquet(out_path / f"odpfc_{year}.gpq")
+    road_links.to_parquet(out_path / f"edge_flow_{future_year}_{pop_scenario}.gpq")
     logging.info(f"The total simulation time: {time.time() - start_time}")
 
 
@@ -141,10 +104,18 @@ if __name__ == "__main__":
         format="%(asctime)s %(process)d %(filename)s %(message)s", level=logging.INFO
     )
     try:
-        year, num_of_chunk, num_of_cpu = sys.argv[1:]
+        future_year, pop_scenario, num_of_chunk, num_of_cpu = sys.argv[1:]
         sample_stride = 1
-        main(int(year), int(num_of_chunk), int(num_of_cpu), sample_stride)
+        main(
+            int(future_year),  # 21, 30, 50
+            pop_scenario,  # ppp, hhh
+            int(num_of_chunk),
+            int(num_of_cpu),
+            sample_stride,
+        )
     except (IndexError, NameError):
         logging.info(
-            "No input year, num_of_chunk, and num_of_cpu, using default values"
+            "Please provide the following command line arguments: "
+            "future_year (21, 30, 50), pop_scenario (ppp, hhh), num_of_chunk (int), "
+            "num_of_cpu (int)."
         )
