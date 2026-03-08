@@ -433,6 +433,8 @@ def edge_init(
     road_links["acc_capacity"] = (
         road_links["combined_label"].map(capacity_plph_dict) * road_links["lanes"] * 24
     )
+    # Baseline capacity used for utilisation ratio checks.
+    road_links["current_capacity"] = road_links["acc_capacity"]
     road_links["acc_speed"] = road_links["initial_flow_speeds"]
 
     # remove invalid road links
