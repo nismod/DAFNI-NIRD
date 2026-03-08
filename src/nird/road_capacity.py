@@ -1,6 +1,7 @@
 """Road Network Flow Model - Functions"""
 
 # Standard library
+import os
 import logging
 import pickle
 import sys
@@ -8,7 +9,7 @@ import time
 import warnings
 from collections import defaultdict
 from multiprocessing import Pool
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 # Third-party
 import geopandas as gpd  # type: ignore
@@ -20,7 +21,6 @@ import gc
 
 # Local
 import nird.constants as cons
-from nird.utils import get_flow_on_edges
 import duckdb
 
 warnings.simplefilter("ignore")
@@ -165,62 +165,135 @@ def find_nearest_node(
     return nearest_node_dict  # zone_idx: node_idx
 
 
-def voc_func(
-    speed: float,
-) -> float:
-    """Calculate the Vehicle Operating Cost (VOC).
+# %%
+def compute_costs_for_links(
+    road_links: pd.DataFrame,
+    vehicle_type: str = "car",
+    cols_out=("time_cost", "operating_cost"),
+    chunksize: int | None = None,
+    inplace: bool = True,
+    eps: float = 1e-6,
+):
+    """Compute costs for each road link based on the vehicle type.
 
     Parameters
     ----------
-    speed: float
-        The average flow speed: mph
+    road_links: pd.DataFrame
+        DataFrame containing road link attributes, including 'time_hr' and 'length_mile'.
+    vehicle_type: str
+        Type of vehicle for cost calculation (e.g., 'car', 'lgv', 'ogv', 'psv', 'rail').
+    cols_out: tuple of str
+        Names of the output columns for time cost and operating cost.
+    chunksize: int or None
+        Number of rows to process in each chunk; if None, process all at once.
+    inplace: bool
+    eps: float
+            Small constant to prevent division by zero in speed calculations.
 
     Returns
     -------
-    float
-        The unit vehicle operating cost: £/km
+    pd.DataFrame or None
     """
-    s = speed * cons.CONV_MILE_TO_KM  # km/hour
-    lpkm = 0.178 - 0.00299 * s + 0.0000205 * (s**2)  # fuel consumption (liter/km)
-    voc_per_km = (
-        140 * lpkm * cons.PENCE_TO_POUND
-    )  # average petrol cost: 140 pence/liter
-    return voc_per_km  # £/km
 
+    def _process_block(df_block: pd.DataFrame):
+        # ensure floats for numeric ops
+        time_hr = df_block["time_hr"].to_numpy(dtype=float)
+        distance_km = (
+            df_block["length_mile"].to_numpy(dtype=float) * cons.CONV_MILE_TO_KM
+        )
+        # toll = df_block["average_toll_cost"].to_numpy(dtype=float)
 
-def cost_func(
-    time: float,
-    distance: float,
-    voc_per_km: float,
-    toll: float,
-) -> Tuple[float, float, float]:  # time: hour, distance: mph, voc: £/km
-    """Calculate the total travel cost.
+        # safe speed
+        v_kmph = distance_km / np.maximum(time_hr, eps)
 
-    Parameters
-    ----------
-    time: float
-        Travel time: hour
-    distance: float
-        Travel distance: mile
-    voc:
-        Vehicle operating cost: £/km
+        # operate_cost per km vectorised (use values from cons)
+        a, b, c, d = tuple(cons.FUEL_LITRE_PER_KM[vehicle_type].values())
+        L = a / np.maximum(v_kmph, eps) + b + c * v_kmph + d * v_kmph**2
+        FC = L * 1.4  # GBP per km
 
-    Returns
-    -------
-    cost: float
-        The total travel costs: £
-    c_time: float
-        The time-equivalent costs: £
-    c_operate: float
-        The vehicle operating costs/fuel costs: £
-    """
-    ave_occ = 1.06  # average car occupancy = 1.6
-    vot = 17.69  # value of time (VOT): 17.69 £/hour
-    d = distance * cons.CONV_MILE_TO_KM
-    c_time = time * ave_occ * vot
-    c_operate = d * voc_per_km
-    cost = time * ave_occ * vot + d * voc_per_km + toll
-    return cost, c_time, c_operate
+        a1, b1 = tuple(cons.NON_FUEL_PENCE_PER_KM[vehicle_type].values())
+        NFC = a1 + b1 / np.maximum(v_kmph, eps)  # pence per km
+        NFC = NFC / 100.0  # GBP per km
+
+        operate_cost_per_km = FC + NFC
+        operate_cost = operate_cost_per_km * distance_km  # GBP (vector)
+
+        # value of time: allow dict or function
+        if hasattr(cons, "VOT_POUND_PER_HOUR"):
+            vot = cons.VOT_POUND_PER_HOUR.get(vehicle_type, None)
+        else:
+            vot = None
+
+        if vot is None:
+            try:
+                vot = cons.VOT_POUND_PER_HOUR(vehicle_type)
+            except Exception as e:
+                raise RuntimeError(
+                    "Could not obtain VOT from cons (VOT_POUND_PER_HOUR)"
+                ) from e
+
+        # compute according to vehicle_type
+        if vehicle_type == "car":
+            ave_occ = 1.06
+            c_time = time_hr * ave_occ * vot
+            # total_cost = c_time + operate_cost + toll
+            out = np.vstack([c_time, operate_cost]).T
+
+        elif vehicle_type in ("lgv", "ogv"):
+            c_time = time_hr * vot
+            # total_cost = c_time + operate_cost + toll
+            out = np.vstack([c_time, operate_cost]).T
+
+        elif vehicle_type == "psv":
+            # waiting time and fare should be counted only once per od flow
+            c_time = time_hr * vot
+            # c_fare = np.minimum(2 + 0.15 * distance_km, 4.5)
+            # total_cost = c_time + c_fare
+            out = np.vstack([c_time, np.zeros_like(c_time)]).T
+
+        elif vehicle_type == "rail":
+            # waiting time and fare should be counted only once per od flow
+            c_time = time_hr * vot
+            # c_fare = np.minimum(3 + 0.2 * distance_km, 250)
+            # total_cost = c_time + c_fare
+            out = np.vstack([c_time, np.zeros_like(c_time)]).T
+
+        else:
+            raise ValueError(f"Unknown vehicle_type: {vehicle_type}")
+
+        return pd.DataFrame(out, index=df_block.index, columns=cols_out)
+
+    # choose chunking strategy
+    n = len(road_links)
+    if chunksize is None or chunksize >= n:
+        results = _process_block(road_links)
+        if inplace:
+            road_links.loc[:, cols_out] = results
+            return None
+        else:
+            return results
+
+    # chunked processing
+    if inplace:
+        # create columns to avoid reallocation during assignment
+        for c in cols_out:
+            if c not in road_links.columns:
+                road_links[c] = np.nan
+
+        for start in range(0, n, chunksize):
+            end = min(start + chunksize, n)
+            block_idx = slice(start, end)
+            block = road_links.iloc[block_idx]
+            res_block = _process_block(block)
+            road_links.loc[block.index, cols_out] = res_block.values
+        return None
+    else:
+        pieces = []
+        for start in range(0, n, chunksize):
+            end = min(start + chunksize, n)
+            block = road_links.iloc[start:end]
+            pieces.append(_process_block(block))
+        return pd.concat(pieces, axis=0).sort_index()
 
 
 def edge_reclassification_func(
@@ -267,8 +340,6 @@ def edge_initial_speed_func(
     -------
     road_links: pd.DataFrame
         with speed information
-    initial_speed_dict: Dict
-        initial vehicle operating speed of existing road links
     """
 
     assert "combined_label" in road_links.columns, "combined_label column not exists!"
@@ -323,6 +394,9 @@ def edge_init(
     Parameters
     ----------
     road_links: gpd.GeoDataFrame
+        Links of the road network.
+    flow_breakpoint_dict: Dict
+        The breakpoint flow beyond which vehicle speed start to decrease.
     capacity_plph_dict: Dict
         The designed edge capacity (per lane per hour).
     free_flow_speed_dict: Dict
@@ -368,70 +442,78 @@ def edge_init(
 
 
 def update_edge_speed(
-    combined_label: str,
-    total_flow: float,
-    initial_flow_speed: float,
-    min_flow_speed: float,
-    breakpoint_flow: float,
-    # flow_breakpoint_dict: Dict[str, float],
-) -> float:
-    """Create the speed-flow curves for different types of roads.
+    road_links: pd.DataFrame, inplace: bool = True
+) -> pd.DataFrame | None:
+    """
+    Update the edge speeds based on accumulated flows.
 
     Parameters
     ----------
-    combined_label: str
-        The type or road links.
-    total_flow: float
-        The number of vehicles on road links (passneger-cars).
-    initial_flow_speed: float
-        The initial traffic speeds of road links (mph).
-    min_flow_speed: float
-        The minimum traffic speeds of road links (mph).
-    breakpoint_flow: float
-        The breakpoint flow after which speed start to decrease. (passenger-cars/hour/lane)
+    road_links: pd.DataFrame
+        DataFrame containing road link attributes.
+    inplace: bool
+        If True, update the DataFrame in place; otherwise, return a new DataFrame.
 
     Returns
     -------
-    speed: float
-        The "real-time" traffic speeds on road links. (mph)
+    pd.DataFrame or None
+        Updated road links DataFrame if inplace=False, otherwise None.
     """
+    acc_flow = road_links["acc_flow"].to_numpy(dtype=float)  # vehicles per day
+    vp = acc_flow / 24.0  # vehicles per hour
+    initial_speed = road_links["initial_flow_speeds"].to_numpy(dtype=float)
+    min_speed = road_links["min_flow_speeds"].to_numpy(dtype=float)
+    breakpoint_flow = road_links["breakpoint_flows"].to_numpy(dtype=float)
 
-    vp = total_flow / 24  # trips/hour
-    if combined_label == "M" and vp > breakpoint_flow:
-        speed = initial_flow_speed - 0.033 * (vp - breakpoint_flow)
-    elif combined_label == "A_single" and vp > breakpoint_flow:
-        speed = initial_flow_speed - 0.05 * (vp - breakpoint_flow)
-    elif combined_label == "A_dual" and vp > breakpoint_flow:
-        speed = initial_flow_speed - 0.033 * (vp - breakpoint_flow)
-    elif combined_label == "B" and vp > breakpoint_flow:
-        speed = initial_flow_speed - 0.05 * (vp - breakpoint_flow)
+    # label reduced speed factors
+    factor_map = {
+        "M": 0.033,
+        "A_dual": 0.033,
+        "A_single": 0.05,
+        "B": 0.05,
+        "B_dual": 0.05,
+        "B_single": 0.05,
+    }
+    # map to factors, default 0.0 for labels not in map
+    labels = road_links["combined_label"].astype(
+        object
+    )  # ensure dtype suitable for map
+    factor_series = labels.map(factor_map).fillna(0.0)
+    factor = factor_series.to_numpy(dtype=float)
+
+    # compute reduction only where vp > breakpoint_flow
+    excess = vp - breakpoint_flow
+    excess = np.where(excess > 0.0, excess, 0.0)
+    reduction = factor * excess
+    speed = initial_speed - reduction
+
+    # enforce minimum
+    speed = np.maximum(speed, min_speed)
+
+    # write result
+    if inplace:
+        road_links["acc_speed"] = speed
+        return None
     else:
-        speed = initial_flow_speed
-    speed = max(speed, min_flow_speed)
-
-    return speed
+        return road_links.assign(acc_speed=speed)
 
 
 def create_igraph_network(
     road_links: gpd.GeoDataFrame,
+    vehicle_type: str = "car",
 ) -> igraph.Graph:
     """Create an undirected igraph network."""
     # cols = road_links.columns.tolist()
-    road_links["edge_length_mile"] = (
-        road_links.geometry.length * cons.CONV_METER_TO_MILE
-    )
-    road_links["time_hr"] = 1.0 * road_links.edge_length_mile / road_links.acc_speed
-    road_links["voc_per_km"] = np.vectorize(voc_func, otypes=None)(road_links.acc_speed)
-    road_links[["weight", "time_cost", "operating_cost"]] = road_links.apply(
-        lambda row: pd.Series(
-            cost_func(
-                row["time_hr"],
-                row["edge_length_mile"],
-                row["voc_per_km"],
-                row["average_toll_cost"],
-            )
-        ),
-        axis=1,
+    road_links["length_mile"] = road_links.geometry.length * cons.CONV_METER_TO_MILE
+    road_links["time_hr"] = 1.0 * road_links.length_mile / road_links.acc_speed
+    compute_costs_for_links(
+        road_links=road_links,
+        vehicle_type=vehicle_type,
+        chunksize=np.maximum(road_links.shape[0] // 10, 100_000),
+        inplace=True,
+    )  # time_cost, operating_cost
+    road_links["weight"] = (
+        road_links.time_cost + road_links.operating_cost + road_links.average_toll_cost
     )
     graph_df = road_links[
         [
@@ -442,14 +524,17 @@ def create_igraph_network(
             "time_cost",
             "operating_cost",
             "average_toll_cost",
+            "length_mile",
         ]
     ]
+
     network = igraph.Graph.TupleList(
         graph_df.itertuples(index=False),
         edge_attrs=list(graph_df.columns)[2:],
         directed=False,
     )
-    index_map = {eid: idx for idx, eid in enumerate(network.es["e_id"])}
+    eids = list(network.es["e_id"])
+    index_map = dict(zip(eids, range(len(eids))))
     road_links["e_idx"] = road_links["e_id"].map(index_map)
     if len(road_links[road_links.e_idx.isnull()]) > 0:
         logging.info("Error: cannot find e_id in the network!")
@@ -459,7 +544,7 @@ def create_igraph_network(
 
 
 def update_network_structure(
-    num_of_edges: int,
+    num_of_edges: int,  # initial network
     network: igraph.Graph,
     temp_edge_flow: pd.DataFrame,
     road_links: gpd.GeoDataFrame,
@@ -482,12 +567,25 @@ def update_network_structure(
         f"#road_links: {len(road_links)}, #valid_links: {len(road_links_valid)}"
     )
     temp_edge_flow = temp_edge_flow.merge(
-        road_links_valid[["e_idx", "acc_capacity"]], on="e_idx", how="left"
+        road_links_valid[["e_id", "e_idx", "acc_capacity", "current_capacity"]],
+        on="e_id",
+        how="left",
     )
+    temp_edge_flow["e_idx"] = temp_edge_flow["e_idx"].astype(int)
+    # create mask
+    ratio = temp_edge_flow["acc_capacity"] / temp_edge_flow["current_capacity"].replace(
+        0, np.nan
+    )
+    # considered fully utilised if remaining capacity < 1 vehicle
+    # or < 1% of original capacity
+    mask = (temp_edge_flow["acc_capacity"] < 1) | (ratio < 0.01)
+
     # drop fully utilised edges from the network
-    # temp_edge_flow["e_idx"] = temp_edge_flow["e_idx"].astype(int)  # ensure e_idx as int
     zero_capacity_edges = set(
-        temp_edge_flow.loc[temp_edge_flow["acc_capacity"] < 1, "e_idx"].tolist()
+        temp_edge_flow.loc[
+            mask,
+            "e_idx",
+        ].tolist()
     )
     network.delete_edges(list(zero_capacity_edges))
     num_of_edges_update = len(list(network.es))
@@ -546,21 +644,23 @@ def extract_od_pairs(
 
 def update_od_matrix(
     temp_flow_matrix: pd.DataFrame,
-    # remain_od: pd.DataFrame,
-) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Divide the OD matrix into allocated and unallocated sections.
+) -> Tuple[pd.DataFrame, pd.DataFrame, float]:
+    """Split OD allocations into routable rows and isolated leftovers.
 
     Parameters
     ----------
-    temp_flow_matrix: origin, destination, path, flow, operating_cost_per_flow,
-        time_cost_per_flow, toll_cost_per_flow
-    remain_od: origin, destination, flow
+    temp_flow_matrix : pd.DataFrame
+        DataFrame with columns ``origin``, ``destination``, ``path`` (list of edge ids),
+        and ``flow`` representing per-OD assignments prior to capacity checks.
 
     Returns
     -------
-    temp_flow_matrix: flow matrix with valid path
-    isolated_flow_matrix: flow matrix with no path
-    remain_od: the remaining od matrix
+    pd.DataFrame
+        Filtered copy containing only rows with a non-empty path.
+    pd.DataFrame
+        Rows whose ``path`` lists are empty (no feasible route found).
+    float
+        Total isolated flow (sum of the ``flow`` values with empty paths).
     """
 
     mask = temp_flow_matrix["path"].apply(lambda x: len(x) == 0)
@@ -581,26 +681,20 @@ def update_od_matrix(
 def find_least_cost_path(
     params: Tuple,
 ) -> Tuple[int, List[str], List[int], List[float]]:
-    """Find the least-cost path for each OD trip.
+    """Solve shortest paths for all destinations of a single origin.
 
-    Parameters:
-    -----------
-    params: Tuple
-        The first element: the origin node (index).
-        The second element: a list of destination nodes (indexes).
-        The third element: a list of outbound trips from origin to its connected
-            destinations.
+    Parameters
+    ----------
+    params : Tuple
+        Tuple of ``(origin_node, destination_nodes, flows)`` where the first entry is
+        the origin vertex id (string), the second is a list of destination ids, and the
+        third is the corresponding list of OD flows.
 
-    Returns:
-    --------
-        idx_of_origin_node: int
-            Same as input.
-        list_of_idx_destination_nodes: list
-            Same as input.
-        paths: list
-            The least-cost paths.
-        flows: list
-            Same as input.
+    Returns
+    -------
+    Tuple[int, List[str], List[List[int]], List[float]]
+        The origin id, destination id list, list of edge-id paths (one per destination),
+        and the list of flows matching the inputs.
     """
     origin_node, destination_nodes, flows = params
     paths = shared_network.get_shortest_paths(
@@ -622,17 +716,17 @@ def find_least_cost_path(
 def worker_init_path(
     shared_network_pkl: bytes,
 ) -> None:
-    """Worker initialisation in multiprocesses to create a shared network
-    that could be used across different workers.
+    """Load the shared igraph network inside each worker process.
 
     Parameters
     ----------
-    shared_network_pkl: bytes
-        The pickled file of the igraph network.
+    shared_network_pkl : bytes
+        Pickled bytes of the igraph ``Graph`` to be shared across worker processes.
 
     Returns
     -------
-    None.
+    None
+        The function sets the module-level ``shared_network`` variable in-place.
     """
     global shared_network
     shared_network = pickle.loads(shared_network_pkl)
@@ -642,194 +736,427 @@ def worker_init_path(
 def itter_path(
     network,
     road_links,
-    temp_flow_matrix: pd.DataFrame,
+    temp_flow_matrix: Optional[pd.DataFrame] = None,
     num_of_chunk: int = None,
     db_path: str = "results.duckdb",
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Iterate through all the paths to calculate edge flows and travel costs."""
-    max_chunk_size = 100_000  # 100_000: baseline; 10_000: future scenarios
-    if max_chunk_size > len(temp_flow_matrix):
-        chunk_size = len(temp_flow_matrix)
-    else:
-        num_of_chunk = min(
-            num_of_chunk, max(1, len(temp_flow_matrix) // max_chunk_size)
+    conn=None,
+    temp_flow_table: Optional[str] = None,
+) -> None:
+    """Iteratively update the OD matrix and edge flows based on the current network structure."""
+
+    if temp_flow_table is None and temp_flow_matrix is None:
+        raise ValueError("Either temp_flow_matrix or temp_flow_table must be provided.")
+
+    if conn is None:
+        conn = duckdb.connect(db_path)
+
+    if temp_flow_table is not None:
+        total_rows = (
+            conn.execute(f"SELECT COUNT(*) FROM {temp_flow_table}").fetchone()[0] or 0
         )
-        chunk_size = len(temp_flow_matrix) // num_of_chunk
-    logging.info(f"temp_flow_matrix size: {len(temp_flow_matrix)}")
-    logging.info(f"chunk_size: {chunk_size}")
+    else:
+        total_rows = len(temp_flow_matrix)
+
+    if total_rows == 0:
+        logging.info("No rows available for itter_path; skipping.")
+        return
 
     edges = network.es
     edges_df = pd.DataFrame(
         {
             "path": range(len(edges)),
-            "edge_id": edges["e_id"],
-            "time_cost": edges["time_cost"],
-            "operating_cost": edges["operating_cost"],
-            "average_toll_cost": edges["average_toll_cost"],
+            "e_id": edges["e_id"],
+            "time": edges["time_cost"],
+            "fuel": edges["operating_cost"],
+            "toll": edges["average_toll_cost"],
+            "length_mile": edges["length_mile"],
         }
-    ).set_index(
-        "path"
-    )  # network attributes
-
-    conn = duckdb.connect(db_path)
-    conn.execute("DROP TABLE IF EXISTS od_results")  # reset table
+    )
+    road_caps_df = road_links[["e_id", "acc_capacity"]]
+    conn.execute("DROP TABLE IF EXISTS od_results_iter")  # reset table
     conn.execute("DROP TABLE IF EXISTS edge_flows")  # reset table
+    conn.register("edges_tmp", edges_df)  # edge attributes
+    conn.register("road_caps_tmp", road_caps_df)  # road capacities
+    conn.execute("CREATE OR REPLACE TEMP TABLE edges_attr AS SELECT * FROM edges_tmp")
+    conn.execute(
+        "CREATE OR REPLACE TEMP TABLE road_caps AS SELECT * FROM road_caps_tmp"
+    )
+    conn.unregister("edges_tmp")
+    conn.unregister("road_caps_tmp")
 
-    first = True
-    for start in tqdm(
-        range(0, len(temp_flow_matrix), chunk_size),
-        desc="Processing chunks:",
-        unit="chunk",
-    ):
-        chunk = temp_flow_matrix.iloc[start : start + chunk_size].explode("path")
-        chunk = chunk.join(edges_df, on="path").rename(
-            columns={
-                "time_cost": "time_cost_per_flow",
-                "operating_cost": "operating_cost_per_flow",
-                "average_toll_cost": "toll_cost_per_flow",
-            }
+    source_table = temp_flow_table
+    if source_table is None:
+        conn.execute("DROP TABLE IF EXISTS temp_flow_matrix_input_mem")
+        conn.register("temp_flow_matrix_input_mem_tmp", temp_flow_matrix)
+        conn.execute(
+            """
+            CREATE TABLE temp_flow_matrix_input_mem AS
+            SELECT *
+            FROM temp_flow_matrix_input_mem_tmp;
+            """
         )
-        chunk = chunk.merge(
-            road_links[["e_idx", "acc_capacity"]],  # !!! e_idx is float
-            left_on="path",
-            right_on="e_idx",
-            how="left",
-        )
-        # aggregate OD results
-        od_df = chunk.groupby(["origin", "destination"], as_index=False).agg(
-            {
-                "path": list,
-                "edge_id": list,
-                "flow": "first",
-                "operating_cost_per_flow": "sum",
-                "time_cost_per_flow": "sum",
-                "toll_cost_per_flow": "sum",
-            }
-        )
+        conn.unregister("temp_flow_matrix_input_mem_tmp")
+        source_table = "temp_flow_matrix_input_mem"
 
-        # edge flows
-        edge_df = (
-            chunk.groupby(by=["e_idx", "origin", "destination"])
-            .agg(
-                {
-                    "acc_capacity": "first",
-                    "flow": "sum",
-                }
-            )
-            .reset_index()
-        )
-        if first:
-            conn.register("od_df", od_df)
-            conn.execute("CREATE TABLE od_results AS SELECT * FROM od_df")
-            conn.unregister("od_df")
-            conn.register("edge_df", edge_df)
-            conn.execute("CREATE TABLE edge_flows AS SELECT * FROM edge_df")
-            conn.unregister("edge_df")
-            first = False
-        else:
-            conn.register("od_df", od_df)
-            conn.append("od_results", od_df)
-            conn.unregister("od_df")
-            conn.register("edge_df", edge_df)
-            conn.append("edge_flows", edge_df)
-            conn.unregister("edge_df")
+    conn.execute(
+        f"""
+        CREATE OR REPLACE TEMP TABLE exploded_paths AS
+        SELECT
+            t.origin,
+            t.destination,
+            t.flow,
+            list_extract(t.path, u.ord) AS path_idx,
+            u.ord AS path_ord
+        FROM {source_table} t
+        CROSS JOIN LATERAL (
+            SELECT UNNEST(range(1, array_length(t.path) + 1)) AS ord
+        ) AS u;
+        """
+    )
 
-        del chunk, od_df, edge_df
-        gc.collect()
+    """
+    Example:
+    origin | destination | flow | path_idx |
+    -------|-------------|------|----------|
+    A      | B           | 100  | [1, 5, 9]|
 
-    logging.info("All chunks processed. Aggregating final results...")
+    -> exploded_paths:
+    origin | destination | flow | path_idx | path_ord |
+    -------|-------------|------|----------|---------|
+    A      | B           | 100  | 1        | 1       |
+    A      | B           | 100  | 5        | 2       |
+    A      | B           | 100  | 9        | 3       |
+
+    """
+    conn.execute(
+        """
+        CREATE TABLE od_results_iter AS
+        SELECT
+            x.origin,
+            x.destination,
+            LIST(e.e_id ORDER BY x.path_ord) AS e_id,
+            MAX(x.flow) AS flow,
+            SUM(e.fuel) AS fuel,
+            SUM(e.time) AS time,
+            SUM(e.toll) AS toll,
+            SUM(e.length_mile) AS length_mile
+        FROM exploded_paths x
+        JOIN edges_attr e
+            ON x.path_idx = e.path
+        GROUP BY x.origin, x.destination;
+        """
+    )
+    """
+    Example:
+     origin | destination | flow | path_idx | path_ord | fuel | time | toll | length_mile
+    -------|-------------|------|----------|---------|------|------|------|-------------
+    A      | B           | 100  | 1        | 1       | 10   | 0.5  | 2    | 5
+    A      | B           | 100  | 5        | 2       | 20   | 1.0  | 0    | 3
+    A      | B           | 100  | 9        | 3       | 15   | 0.8  | 1    | 4
+
+    -> od_results:
+    origin | destination | flow | e_id       | fuel | time | toll | length_mile
+    -------|-------------|------|------------|------|------|------|-------------
+    A      | B           | 100  | [1, 5, 9]  | 45   | 2.3  | 3    | 12
+    """
+
+    conn.execute(
+        """
+        CREATE TABLE edge_flows AS
+        SELECT
+            e.e_id,
+            x.origin,
+            x.destination,
+            MAX(c.acc_capacity) AS acc_capacity,
+            SUM(x.flow) AS flow
+        FROM exploded_paths x
+        JOIN edges_attr e
+            ON x.path_idx = e.path
+        LEFT JOIN road_caps c
+            ON e.e_id = c.e_id
+        GROUP BY e.e_id, x.origin, x.destination;
+        """
+    )
+
+    """
+    Example:
+    origin | destination | flow | path_idx | path_ord
+    -------|-------------|------|----------|---------
+    A      | B           | 100  | 1        | 1
+    A      | B           | 100  | 5        | 2
+    A      | B           | 100  | 9        | 3
+    -> join with edge attributes:
+    origin | destination | flow | path_idx | path_ord | e_id
+    -------|-------------|------|----------|---------|------
+    A      | B           | 100  | 1        | 1       | 1
+    A      | B           | 100  | 5        | 2       | 5
+    A      | B           | 100  | 9        | 3       | 9
+    -> join with road_caps:
+    origin | destination | flow | path_idx | path_ord | e_id | acc_capacity
+    -------|-------------|------|----------|---------|------|-------------
+    A      | B           | 100  | 1        | 1       | 1    | 500
+    A      | B           | 100  | 5        | 2       | 5    | 300
+    A      | B           | 100  | 9        | 3       | 9    | 200
+
+    -> edge_flows (group by e_id, origin, destination):
+    e_id | origin | destination | acc_capacity | flow
+    -----|--------|-------------|--------------|------
+    1    | A      | B           | 500          | 100
+    5    | A      | B           | 300          | 100
+    9    | A      | B           | 200          | 100
+    """
+    conn.execute("DROP TABLE IF EXISTS exploded_paths")
+    if source_table == "temp_flow_matrix_input_mem":
+        conn.execute("DROP TABLE IF EXISTS temp_flow_matrix_input_mem")
+
+    logging.info("Completed SQL path explosion and aggregation in DuckDB.")
 
     # od results
-    temp_flow_matrix = conn.sql(
+    # origin, destination, path, flow, cost
+    # 1) create base
+    conn.execute(
         """
-        WITH base AS (
-            SELECT
-                e_idx,
+    CREATE OR REPLACE TEMP TABLE base AS
+    SELECT
+        e_id,
+        origin,
+        destination,
+        MAX(acc_capacity) AS acc_capacity,
+        SUM(flow) AS flow
+    FROM edge_flows
+    GROUP BY e_id, origin, destination;
+    """
+    )
+
+    # 2) create total (per e_id)
+    conn.execute(
+        """
+    CREATE OR REPLACE TEMP TABLE total AS
+    SELECT e_id, SUM(flow) AS total_flow
+    FROM base
+    GROUP BY e_id;
+    """
+    )
+
+    # 3) create od_adjustment
+    conn.execute(
+        """
+    CREATE OR REPLACE TEMP TABLE od_adjustment AS
+    SELECT
+        b.origin,
+        b.destination,
+        MIN(LEAST(b.acc_capacity / NULLIF(t.total_flow, 0), 1.0)) AS adjust_r
+    FROM base b
+    JOIN total t USING (e_id)
+    GROUP BY b.origin, b.destination;
+    """
+    )
+    """
+    Example:
+    e_id | origin | destination | acc_capacity | flow | adsjust_r
+    -----|--------|-------------|--------------|------|---------
+    1    | A      | B           | 500          | 100  | min(500/100, 1) = 1.0
+    5    | A      | B           | 300          | 100  | min(300/100, 1) = 1.0
+    9    | A      | B           | 200          | 100  | min(200/100, 1) = 1.0
+
+    od_adjustment:
+    origin | destination | adjust_r
+    -------|-------------|---------
+    A      | B           | 1.0
+
+    """
+
+    # 4) final result
+    conn.execute(
+        """
+    CREATE OR REPLACE TEMP TABLE temp_flow_matrix AS
+    SELECT
+        o.origin,
+        o.destination,
+        o.e_id,
+        o.flow * COALESCE(a.adjust_r, 1.0) AS flow,
+        o.fuel,
+        o.time,
+        o.toll,
+        o.length_mile
+    FROM od_results_iter o
+    LEFT JOIN od_adjustment a USING (origin, destination);
+    """
+    )
+    """
+    Example: -> od_results with od_adjustment
+    """
+    logging.info("Complete creating temp_flow_matrix table in Duckdb!")
+
+    if temp_flow_table is not None:
+        conn.execute(f"DROP TABLE IF EXISTS {temp_flow_table}")
+
+    return
+
+
+def apply_final_overflow_retention(
+    conn: duckdb.DuckDBPyConnection,
+    road_links: gpd.GeoDataFrame,
+    time_expr: str,
+    fare_expr: str,
+) -> Tuple[gpd.GeoDataFrame, float, float, float, float, float, float]:
+    """Assign final residual OD demand as overflow on known paths.
+
+    Returns
+    -------
+    Tuple[gpd.GeoDataFrame, float, float, float, float, float, float]
+        Updated road links, extra assigned flow, residual isolated flow, and overflow
+        costs in order: fuel, time, toll, fare.
+    """
+    conn.execute(
+        """
+        CREATE OR REPLACE TEMP TABLE remain_overflow AS
+        SELECT
+            r.origin_node AS origin,
+            r.destination_node AS destination,
+            r.Car21 AS flow,
+            t.e_id,
+            t.fuel,
+            t.time,
+            t.toll,
+            t.length_mile
+        FROM remain_od r
+        JOIN temp_flow_matrix t
+            ON r.origin_node = t.origin
+           AND r.destination_node = t.destination
+        WHERE r.Car21 > 0;
+        """
+    )
+    extra_assigned = (
+        conn.execute("SELECT COALESCE(SUM(flow), 0.0) FROM remain_overflow").fetchone()[
+            0
+        ]
+        or 0.0
+    )
+
+    iter_cost_fuel_over = 0.0
+    iter_cost_time_over = 0.0
+    iter_cost_toll_over = 0.0
+    iter_cost_fare_over = 0.0
+
+    if extra_assigned > 0:
+        conn.execute(
+            f"""
+            INSERT INTO odpfc (
                 origin,
                 destination,
-                MAX(acc_capacity) AS acc_capacity,
-                SUM(flow) AS flow
-            FROM edge_flows
-            GROUP BY e_idx, origin, destination
-        ),
-        total AS (
+                path,
+                flow,
+                fuel,
+                time,
+                toll,
+                fare
+            )
             SELECT
-                e_idx,
-                SUM(flow) AS total_flow
-            FROM base
-            GROUP BY e_idx
-        ),
-        od_adjustment AS (
-            SELECT
-                b.origin,
-                b.destination,
-                MIN(LEAST(b.acc_capacity / NULLIF(t.total_flow, 0), 1.0)) AS adjust_r
-            FROM base b
-            JOIN total t USING (e_idx)
-            GROUP BY b.origin, b.destination
+                origin,
+                destination,
+                e_id AS path,
+                flow,
+                fuel,
+                {time_expr} AS time,
+                toll,
+                {fare_expr} AS fare
+            FROM remain_overflow
+            """
         )
+
+        iter_cost_fuel_over = (
+            conn.execute(
+                "SELECT COALESCE(SUM(flow * fuel), 0.0) FROM remain_overflow"
+            ).fetchone()[0]
+            or 0.0
+        )
+        iter_cost_time_over = (
+            conn.execute(
+                f"SELECT COALESCE(SUM(flow * {time_expr}), 0.0) FROM remain_overflow"
+            ).fetchone()[0]
+            or 0.0
+        )
+        iter_cost_toll_over = (
+            conn.execute(
+                "SELECT COALESCE(SUM(flow * toll), 0.0) FROM remain_overflow"
+            ).fetchone()[0]
+            or 0.0
+        )
+        iter_cost_fare_over = (
+            conn.execute(
+                f"SELECT COALESCE(SUM(flow * {fare_expr}), 0.0) FROM remain_overflow"
+            ).fetchone()[0]
+            or 0.0
+        )
+
+        temp_edge_flow_over = conn.execute(
+            """
+            SELECT
+                e AS e_id,
+                SUM(flow) AS flow
+            FROM (
+                SELECT
+                    flow,
+                    UNNEST(e_id) AS e
+                FROM remain_overflow
+            ) AS t
+            GROUP BY e
+        """
+        ).fetchdf()
+
+        road_links = road_links.merge(
+            temp_edge_flow_over[["e_id", "flow"]], on="e_id", how="left"
+        )
+        road_links["flow"] = road_links["flow"].fillna(0.0)
+        road_links["acc_flow"] += road_links["flow"]
+        road_links["acc_capacity"] = road_links["acc_capacity"] - road_links["flow"]
+        road_links.drop(columns=["flow"], inplace=True)
+
+    conn.execute(
+        """
+        CREATE OR REPLACE TEMP TABLE remain_without_path AS
         SELECT
-            o.*,
-            a.adjust_r
-        FROM od_results o
-        LEFT JOIN od_adjustment a
-        USING (origin, destination)
-    """
-    ).df()
+            r.origin_node,
+            r.destination_node,
+            r.Car21 AS flow
+        FROM remain_od r
+        LEFT JOIN remain_overflow o
+            ON r.origin_node = o.origin
+           AND r.destination_node = o.destination
+        WHERE o.origin IS NULL AND r.Car21 > 0;
+        """
+    )
+    temp_isolation = (
+        conn.execute(
+            "SELECT COALESCE(SUM(flow), 0.0) FROM remain_without_path"
+        ).fetchone()[0]
+        or 0.0
+    )
+    if temp_isolation > 0:
+        conn.execute(
+            """
+            INSERT INTO isolated_od
+            SELECT
+                origin_node,
+                destination_node,
+                flow
+            FROM remain_without_path;
+            """
+        )
 
-    conn.close()
-    logging.info("Complete calculating od flow adjustment ratios with Duckdb!")
-    return temp_flow_matrix
+    conn.execute("DROP TABLE IF EXISTS remain_without_path")
+    conn.execute("DROP TABLE IF EXISTS remain_overflow")
 
-
-def retrieve_path_attributes(path: List[int]) -> Dict:
-    """Retrieve attributes for a given path."""
-    if not path:
-        return None
-    edges = shared_network.es
-    edges_df = pd.DataFrame(
-        {
-            "path": range(len(edges)),
-            "edge_id": edges["e_id"],
-            "time_cost": edges["time_cost"],
-            "operating_cost": edges["operating_cost"],
-            "average_toll_cost": edges["average_toll_cost"],
-        }
-    ).set_index("path")
-    # (edge_id, time_cost, operating_cost, average_toll_cost)
-
-    selected = edges_df.loc[
-        path, ["edge_id", "time_cost", "operating_cost", "average_toll_cost"]
-    ]
-
-    # directly compute aggregated values, no Series
-    edge_id_list = selected["edge_id"].tolist()
-    time_cost_sum = selected["time_cost"].sum()
-    operating_cost_sum = selected["operating_cost"].sum()
-    toll_cost_sum = selected["average_toll_cost"].sum()
-
-    return edge_id_list, time_cost_sum, operating_cost_sum, toll_cost_sum
-
-
-def calculate_path(tfm_chunk: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Calculate path attributes for a chunk of the flow matrix."""
-
-    tfm_chunk[
-        [
-            "edge_id",
-            "time_cost_per_flow",
-            "operating_cost_per_flow",
-            "toll_cost_per_flow",
-        ]
-    ] = tfm_chunk["path"].apply(lambda p: pd.Series(retrieve_path_attributes(p)))
-
-    return tfm_chunk
-
-
-def chunk_df(df, n_chunks: int):
-    """Split dataframe into n roughly equal chunks."""
-    chunk_size = int(np.ceil(len(df) / n_chunks))
-    return [df.iloc[i : i + chunk_size] for i in range(0, len(df), chunk_size)]
+    return (
+        road_links,
+        extra_assigned,
+        temp_isolation,
+        iter_cost_fuel_over,
+        iter_cost_time_over,
+        iter_cost_toll_over,
+        iter_cost_fare_over,
+    )
 
 
 def network_flow_model(
@@ -840,24 +1167,49 @@ def network_flow_model(
     num_of_chunk: int,
     num_of_cpu: int,
     db_path: str = "results.duckdb",
-) -> Tuple[gpd.GeoDataFrame, List, List]:
-    """Process-based Network Flow Simulation.
+    iso_out_path: str = None,
+    odpfc_out_path: str = None,
+    vehicle_type: str = "car",
+    capacity_mode: bool = False,
+) -> Tuple[gpd.GeoDataFrame, List[float]]:
+    """Iteratively assign OD demand, update road attributes, and export results.
 
     Parameters
     ----------
-    road_links: road links
-    network: igraph network
-    remain_od: od matrix
-    flow_breakpoint_dict: flow breakpoints of different types of road links
+    road_links : gpd.GeoDataFrame
+        Road network edges with geometry and accumulated metrics.
+    network : igraph.Graph
+        Directed network used for least-cost path searches.
+    remain_od : pd.DataFrame
+        Input OD matrix with columns ``origin_node``, ``destination_node``, ``Car21``.
+    flow_breakpoint_dict : Dict[str, float]
+        Dictionary mapping combined labels to breakpoint flows for speed updates.
+    num_of_chunk : int
+        Number of chunks to split per-iteration path results when exploding paths.
+    num_of_cpu : int
+        Number of worker processes used for path finding (>=1).
+    db_path : str, default ``"results.duckdb"``
+        Location of the DuckDB database for temporaries and final tables.
+    iso_out_path : str
+        File path where the final isolated OD Parquet file will be written.
+    odpfc_out_path : str
+        File path where the per-path flow/cost Parquet file will be written.
+    vehicle_type : str, default ``"car"``
+        Vehicle type for cost calculations; one of ``["car", "lgv", "ogv", "psv", "rail"]``.
+    capacity_mode : bool, default ``False``
+        If ``True``, residual OD demand at stop conditions is assigned as overflow on
+        already-found paths (allowing over-capacity edges) where possible, instead of
+        being fully moved to isolation.
 
     Returns
     -------
-    road_links: with added attributes (acc_flow, acc_capacity, acc_speed)
-    isolation: non-allocated od matrix
-    odpfc: allocated od matrix
+    gpd.GeoDataFrame
+        Road links with updated accumulated flow, capacity, and speed attributes.
+    List[float]
+        Aggregate costs in the order ``[cost_time, cost_fuel, cost_toll, total_cost]``.
     """
-    road_links_columns = road_links.columns.tolist()
 
+    road_links_columns = road_links.columns.tolist()
     total_remain = remain_od["Car21"].sum()
     logging.info(f"The initial supply is {total_remain}")
     number_of_edges = len(list(network.es))
@@ -868,44 +1220,195 @@ def network_flow_model(
     logging.info(f"The initial number of destinations: {number_of_destinations}")
 
     # starts
-    total_cost = cost_time = cost_fuel = cost_toll = 0
-    odpfc, isolation = [], []
+    total_cost = cost_time = cost_fuel = cost_toll = cost_fare = 0
     initial_sumod = remain_od["Car21"].sum()
     assigned_sumod = 0
     iter_flag = 1
+
+    # create db (remove the pre-exist one)
+    if os.path.exists(db_path):
+        os.remove(db_path)
+    # create isolated_od table
+    conn = duckdb.connect(db_path)
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE isolated_od (
+            origin_node VARCHAR,
+            destination_node VARCHAR,
+            flow DOUBLE
+        );
+    """
+    )
+    # create odpfc table
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE odpfc (
+            origin VARCHAR,
+            destination VARCHAR,
+            path VARCHAR,
+            flow DOUBLE,
+            fuel DOUBLE,
+            time DOUBLE,
+            toll DOUBLE,
+            fare DOUBLE,
+        )
+        """
+    )
+    # create remain_od table
+    conn.execute("DROP TABLE IF EXISTS remain_od")
+    conn.register(
+        "remain_od_tmp",
+        remain_od[["origin_node", "destination_node", "Car21"]],
+    )
+    conn.execute(
+        """
+        CREATE TABLE remain_od AS
+        SELECT
+            origin_node,
+            destination_node,
+            Car21
+        FROM remain_od_tmp;
+        """
+    )
+    conn.unregister("remain_od_tmp")
+    total_remain = (
+        conn.execute("SELECT COALESCE(SUM(Car21), 0.0) FROM remain_od").fetchone()[0]
+        or 0.0
+    )
+    del remain_od
+    gc.collect()
+
     while total_remain > 0:
         logging.info(f"No.{iter_flag} iteration starts:")
-        # check isolations: [origin_node, destination_node, flow]
-        mask = remain_od["origin_node"].isin(network.vs["name"]) & (
-            remain_od["destination_node"].isin(network.vs["name"])
+        # remove OD pairs whose nodes are not present in the current network
+        conn.register("current_valid_nodes", pd.DataFrame({"node": network.vs["name"]}))
+        conn.execute("DROP TABLE IF EXISTS isolated_tmp")
+        conn.execute(
+            """
+        CREATE TEMP TABLE isolated_tmp AS
+        SELECT
+            origin_node,
+            destination_node,
+            Car21 AS flow
+        FROM remain_od
+        WHERE origin_node NOT IN (SELECT node FROM current_valid_nodes)
+           OR destination_node NOT IN (SELECT node FROM current_valid_nodes);
+        """
         )
-        isolated_flow_matrix = remain_od.loc[
-            ~mask, ["origin_node", "destination_node", "Car21"]
-        ]  # 38
-        isolation.extend(isolated_flow_matrix.values.tolist())
-        remain_od = remain_od[mask].reset_index(drop=True)  # 1698
-        temp_isolation = isolated_flow_matrix.Car21.sum()
+        temp_isolation = (
+            conn.execute(
+                "SELECT COALESCE(SUM(flow), 0.0) FROM isolated_tmp"
+            ).fetchone()[0]
+            or 0.0
+        )
+        if temp_isolation > 0:
+            conn.execute("INSERT INTO isolated_od SELECT * FROM isolated_tmp")
+            conn.execute(
+                """
+            DELETE FROM remain_od
+            WHERE origin_node NOT IN (SELECT node FROM current_valid_nodes)
+               OR destination_node NOT IN (SELECT node FROM current_valid_nodes);
+            """
+            )
+        conn.unregister("current_valid_nodes")
+        conn.execute("DROP TABLE IF EXISTS isolated_tmp")
         logging.info(f"Initial isolated flows: {temp_isolation}")
-        # initial_sumod -= temp_isolation
+
         # dump the network and edge weight for shared use in multiprocessing
         shared_network_pkl = pickle.dumps(network)
 
         # find the least-cost path for each OD trip
-        args = []
-        for origin_node, subset in tqdm(
-            remain_od.groupby("origin_node"), desc="Creating argument list: "
-        ):
-            args.append(
-                (
-                    origin_node,
-                    subset.destination_node.tolist(),
-                    subset.Car21.tolist(),
+        args_df = conn.execute(
+            """
+        SELECT
+            origin_node,
+            LIST(destination_node ORDER BY destination_node) AS destinations,
+            LIST(Car21 ORDER BY destination_node) AS flows
+        FROM remain_od
+        GROUP BY origin_node
+        """
+        ).fetchdf()
+        total_args = len(args_df)
+
+        def iter_args():
+            for row in args_df.itertuples(index=False):
+                yield (
+                    row.origin_node,
+                    list(row.destinations) if row.destinations is not None else [],
+                    list(row.flows) if row.flows is not None else [],
                 )
+
+        conn.execute("DROP TABLE IF EXISTS temp_flow_matrix_input")
+        conn.execute(
+            """
+            CREATE TABLE temp_flow_matrix_input (
+                origin VARCHAR,
+                destination VARCHAR,
+                path INT[],
+                flow DOUBLE
+            );
+            """
+        )
+        conn.execute("DROP TABLE IF EXISTS temp_isolated_flow_matrix")
+        conn.execute(
+            """
+            CREATE TEMP TABLE temp_isolated_flow_matrix (
+                origin VARCHAR,
+                destination VARCHAR,
+                flow DOUBLE
+            );
+            """
+        )
+
+        flow_batch: List[Tuple[str, str, List[int], float]] = []
+        isolated_batch: List[Tuple[str, str, float]] = []
+        batch_size = 100_000
+
+        def flush_flow_batch() -> None:
+            nonlocal flow_batch
+            if not flow_batch:
+                return
+            batch_df = pd.DataFrame(
+                flow_batch, columns=["origin", "destination", "path", "flow"]
             )
+            conn.register("temp_flow_batch", batch_df)
+            conn.execute(
+                "INSERT INTO temp_flow_matrix_input SELECT * FROM temp_flow_batch"
+            )
+            conn.unregister("temp_flow_batch")
+            flow_batch = []
+
+        def flush_isolated_batch() -> None:
+            nonlocal isolated_batch
+            if not isolated_batch:
+                return
+            iso_df = pd.DataFrame(
+                isolated_batch, columns=["origin", "destination", "flow"]
+            )
+            conn.register("temp_isolated_batch", iso_df)
+            conn.execute(
+                "INSERT INTO temp_isolated_flow_matrix SELECT * FROM temp_isolated_batch"
+            )
+            conn.unregister("temp_isolated_batch")
+            isolated_batch = []
+
+        def handle_shortest_path(
+            shortest_path: Tuple[str, List[str], List[List[int]], List[float]],
+        ) -> None:
+            origin_node, destinations, paths, flows = shortest_path
+            for dest, path, flow in zip(destinations, paths, flows):
+                flow_val = float(flow) if flow is not None else 0.0
+                if not path:  # if no path between OD -> isolation
+                    isolated_batch.append((origin_node, dest, flow_val))
+                else:
+                    flow_batch.append((origin_node, dest, path, flow_val))
+                if len(flow_batch) >= batch_size:
+                    flush_flow_batch()
+                if len(isolated_batch) >= batch_size:
+                    flush_isolated_batch()
 
         # batch-processing
         st = time.time()
-        list_of_spath = []
         if num_of_cpu > 1:
             with Pool(
                 processes=num_of_cpu,
@@ -913,161 +1416,305 @@ def network_flow_model(
                 initargs=(shared_network_pkl,),
             ) as pool:
                 for i, shortest_path in enumerate(
-                    pool.imap_unordered(find_least_cost_path, args)
+                    pool.imap_unordered(find_least_cost_path, iter_args()), start=1
                 ):
-                    list_of_spath.append(shortest_path)
+                    handle_shortest_path(shortest_path)
                     if i % 10_000 == 0:
                         logging.info(
-                            f"Completed {i} of {len(args)}, {100 * i / len(args):.2f}%"
+                            f"Completed {i} of {total_args}, "
+                            f"{100 * i / total_args:.2f}%"
                         )
         else:
             global shared_network
             shared_network = network
-            list_of_spath = [find_least_cost_path(arg) for arg in args]
-            # -> [origin(name), destinations(name), path(idx), flow(int)]
+            for i, shortest_path in enumerate(
+                (find_least_cost_path(arg) for arg in iter_args()), start=1
+            ):
+                handle_shortest_path(shortest_path)
+                if i % 10_000 == 0:
+                    logging.info(
+                        f"Completed {i} of {total_args}, "
+                        f"{100 * i / total_args:.2f}%"
+                    )
+
+        del args_df
+        gc.collect()
+
+        flush_flow_batch()
+        flush_isolated_batch()
         logging.info(f"The least-cost path flow allocation time: {time.time() - st}.")
-        temp_flow_matrix = (
-            pd.DataFrame(
-                list_of_spath,
-                columns=[
-                    "origin",
-                    "destination",
-                    "path",
-                    "flow",
-                ],
-            )
-            .explode(
-                [
-                    "destination",
-                    "path",
-                    "flow",
-                ]
-            )
-            .reset_index(drop=True)
+
+        # isolated flow
+        temp_isolation = (
+            conn.execute(
+                "SELECT COALESCE(SUM(flow), 0.0) FROM temp_isolated_flow_matrix"
+            ).fetchone()[0]
+            or 0.0
         )
-        # calculate the non-allocated flows and remaining flows
-        (
-            temp_flow_matrix,  # to-be-allocated: origin-destination-path-flow
-            isolated_flow_matrix,  # isolated: origin-destination-flow
-            temp_isolation,
-        ) = update_od_matrix(temp_flow_matrix)
-        # update isolation: [origin, destination, flow]
         logging.info(f"Non_allocated_flow: {temp_isolation}")
-        # initial_sumod -= temp_isolation
-        isolation.extend(isolated_flow_matrix.to_numpy().tolist())
-        if len(temp_flow_matrix) == 0:
+        if temp_isolation > 0:
+            conn.execute(
+                """
+                CREATE OR REPLACE TEMP TABLE temp_isolated_flow_matrix_agg AS
+                SELECT
+                    origin,
+                    destination,
+                    SUM(flow) AS flow
+                FROM temp_isolated_flow_matrix
+                GROUP BY origin, destination;
+                """
+            )
+            conn.execute(
+                "INSERT INTO isolated_od SELECT * FROM temp_isolated_flow_matrix_agg"
+            )
+            conn.execute("DROP TABLE IF EXISTS temp_isolated_flow_matrix_agg")
+        conn.execute("DROP TABLE IF EXISTS temp_isolated_flow_matrix")
+
+        # remaining flow
+        temp_flow_count = (
+            conn.execute("SELECT COUNT(*) FROM temp_flow_matrix_input").fetchone()[0]
+            or 0
+        )
+        if temp_flow_count == 0:
             logging.info("Stop: no remaining flows!")
+            conn.execute("DROP TABLE IF EXISTS temp_flow_matrix_input")
             break
 
         # %%
-        # calculate edge flows -> [e_idx, flow]
-        # and attach cost matrix (fuel, time, toll) to temp_flow_matrix
-        logging.info("Calculating edge flows...")
-        temp_flow_matrix = itter_path(
+        logging.info("Create temp_flow_matrix table in duckdb...")
+        # origin (name), destination(name), path(idx), flow(int)
+        itter_path(
             network,
             road_links,
-            temp_flow_matrix,
+            temp_flow_matrix=None,
             num_of_chunk=num_of_chunk,
             db_path=db_path,
+            conn=conn,
+            temp_flow_table="temp_flow_matrix_input",
+        )  # -> xxx, fuel, time, toll
+
+        assigned_iter_sum = (
+            conn.execute(
+                "SELECT COALESCE(SUM(flow), 0.0) FROM temp_flow_matrix"
+            ).fetchone()[0]
+            or 0.0
         )
 
-        r = temp_flow_matrix["adjust_r"].min()
-        logging.info(f"The minimum r value is: {r}.")
+        # assign flows (scalar) for this iteration
+        assigned_sumod += assigned_iter_sum
+        percentage_sumod = assigned_sumod / initial_sumod if initial_sumod > 0 else 1.0
 
-        # %%
-        # use this r to adjust temp_flow_matrix and the remain_od matrix
-        if iter_flag <= 5:
-            temp_flow_matrix["flow"] = (
-                temp_flow_matrix["flow"] * temp_flow_matrix["adjust_r"]
+        # append the adjusted per-OD rows (e_id) into odpfc (-> path)
+        if vehicle_type == "psv":
+            time_expr = f"time + 0.25 * {cons.VOT_POUND_PER_HOUR[vehicle_type]}"
+            fare_expr = f"LEAST(2.0 + 0.15 * length_mile * {cons.CONV_MILE_TO_KM}, 4.5)"
+        elif vehicle_type == "rail":
+            time_expr = f"time + 0.15 * {cons.VOT_POUND_PER_HOUR[vehicle_type]}"
+            fare_expr = (
+                f"LEAST(3.0 + 0.2  * length_mile * {cons.CONV_MILE_TO_KM}, 250.0)"
             )
-        assigned_sumod += temp_flow_matrix["flow"].sum()
-        percentage_sumod = assigned_sumod / initial_sumod
+        else:
+            time_expr = "time"
+            fare_expr = "0.0"
 
-        temp_flow_matrix_indexed = temp_flow_matrix.set_index(["origin", "destination"])
-        remain_od[["origin", "destination"]] = remain_od[
-            ["origin_node", "destination_node"]
-        ]
-        remain_od_indexed = remain_od.set_index(["origin", "destination"])
-        merged = temp_flow_matrix_indexed.join(remain_od_indexed, how="inner")
-        merged["Car21"] = (merged["Car21"] - merged["flow"]).clip(
-            lower=0
-        )  # non-negative
-        remain_od = merged.reset_index()[["origin_node", "destination_node", "Car21"]]
-        remain_od = remain_od[remain_od.Car21 > 0].reset_index(drop=True)
+        conn.execute(
+            f"""
+            INSERT INTO odpfc (
+                origin,
+                destination,
+                path,
+                flow,
+                fuel,
+                time,
+                toll,
+                fare
+            )
+            SELECT
+                origin,
+                destination,
+                e_id AS path,
+                flow,
+                fuel,
+                {time_expr} AS time,
+                toll,
+                {fare_expr} AS fare
+            FROM temp_flow_matrix
+            """
+        )
 
-        total_remain = remain_od["Car21"].sum()
-        logging.info(f"The total remain flow (after adjustment) is: {total_remain}.")
+        # compute costs
+        iter_cost_fuel = (
+            conn.execute(
+                "SELECT COALESCE(SUM(flow * fuel), 0.0) FROM temp_flow_matrix"
+            ).fetchone()[0]
+            or 0.0
+        )
+        iter_cost_time = (
+            conn.execute(
+                f"SELECT COALESCE(SUM(flow * {time_expr}), 0.0) FROM temp_flow_matrix"
+            ).fetchone()[0]
+            or 0.0
+        )
+        iter_cost_toll = (
+            conn.execute(
+                "SELECT COALESCE(SUM(flow * toll), 0.0) FROM temp_flow_matrix"
+            ).fetchone()[0]
+            or 0.0
+        )
+        iter_cost_fare = (
+            conn.execute(
+                f"SELECT COALESCE(SUM(flow * {fare_expr}), 0.0) FROM temp_flow_matrix"
+            ).fetchone()[0]
+            or 0.0
+        )
 
-        # %%
-        # update road link attributes (acc_flow, acc_capacity, acc_speed)
-        logging.info("Calculating edge flows...")
-        temp_edge_flow = get_flow_on_edges(temp_flow_matrix, "e_idx", "path", "flow")
+        cost_fuel += iter_cost_fuel
+        cost_time += iter_cost_time
+        cost_toll += iter_cost_toll
+        cost_fare += iter_cost_fare
+        total_cost = cost_fuel + cost_time + cost_toll + cost_fare
+
+        # aggregate edge flows from edge_flows table
+        temp_edge_flow = conn.execute(
+            """
+            SELECT
+                e AS e_id,
+                SUM(flow) AS flow
+            FROM (
+                SELECT
+                    flow,
+                    UNNEST(e_id) AS e
+                FROM temp_flow_matrix
+            ) AS t
+            GROUP BY e
+        """
+        ).fetchdf()
+
+        # merge edge flows into road_links and update accumulators
         road_links = road_links.merge(
-            temp_edge_flow[["e_idx", "flow"]], on="e_idx", how="left"
+            temp_edge_flow[["e_id", "flow"]], on="e_id", how="left"
         )
         road_links["flow"] = road_links["flow"].fillna(0.0)
         road_links["acc_flow"] += road_links["flow"]
-        road_links["acc_capacity"] = (
-            road_links["acc_capacity"] - road_links["flow"]
-        )  # .clip(lower=0)
+        road_links["acc_capacity"] = road_links["acc_capacity"] - road_links["flow"]
+
+        # Recalculate edge speeds for edges that changed (vectorized if possible)
         logging.info("Updating edge speeds: ")
-        road_links["acc_speed"] = road_links.progress_apply(
-            lambda x: update_edge_speed(
-                x["combined_label"],
-                x["acc_flow"],
-                x["initial_flow_speeds"],
-                x["min_flow_speeds"],
-                x["breakpoint_flows"],
-            ),
-            axis=1,
-        )
+        update_edge_speed(road_links, inplace=True)
         road_links.drop(columns=["flow"], inplace=True)
-        # %%
-        # estimate total travel costs:
-        # [origin_node_id, destination_node_id,
-        # path(edge_idx), edge_id, flow, fuel, time, toll, adjust_r]
-        odpfc.extend(
-            temp_flow_matrix.drop(columns=["path", "adjust_r"]).to_numpy().tolist()
+
+        # update remain od using DuckDB
+        conn.execute(
+            """
+        CREATE OR REPLACE TEMP TABLE remain_od_updated AS
+        SELECT
+            r.origin_node,
+            r.destination_node,
+            GREATEST((r.Car21 - COALESCE(a.flow_assigned, 0.0)), 0.0) AS Car21
+        FROM remain_od r
+        LEFT JOIN (
+            SELECT
+                origin,
+                destination,
+                SUM(flow) AS flow_assigned
+            FROM temp_flow_matrix
+            GROUP BY origin, destination
+        ) a
+        ON r.origin_node = a.origin AND r.destination_node = a.destination;
+        """
         )
-        # path: list of edge index (1,2,3...), adjust_r: list of flow adjustment ratios
-        cost_fuel += (
-            temp_flow_matrix["flow"] * temp_flow_matrix["operating_cost_per_flow"]
-        ).sum()
-        cost_time += (
-            temp_flow_matrix["flow"] * temp_flow_matrix["time_cost_per_flow"]
-        ).sum()
-        cost_toll += (
-            temp_flow_matrix["flow"] * temp_flow_matrix["toll_cost_per_flow"]
-        ).sum()
-        total_cost = cost_fuel + cost_time + cost_toll
+
+        conn.execute("DELETE FROM remain_od")
+        conn.execute(
+            """
+        INSERT INTO remain_od
+        SELECT origin_node, destination_node, Car21
+        FROM remain_od_updated
+        WHERE Car21 > 0;
+        """
+        )
+
+        total_remain = (
+            conn.execute("SELECT COALESCE(SUM(Car21), 0.0) FROM remain_od").fetchone()[
+                0
+            ]
+            or 0.0
+        )
+        logging.info(f"The total remain flow (after adjustment) is: {total_remain}.")
+        gc.collect()
 
         # %%
         # check point for next iteration
-        if r >= 1:
-            logging.info(
-                f"Stop: {percentage_sumod*100}% of flows have been allocated"
-                "and there is no edge overflow!"
-            )
-            break
-
+        stop_reason = None
         if percentage_sumod >= 0.99:
-            # origin_node, destination_node, Car21
-            temp_isolation = remain_od.Car21.sum()
-            isolation.extend(remain_od.to_numpy().tolist())
-            logging.info(
-                f"Stop: {percentage_sumod*100}% of flows have been allocated with "
-                f"{temp_isolation} extra isolated flows."
-            )
-            break
+            stop_reason = "target_allocated"
+        elif iter_flag > 4:  # 5 iterations
+            stop_reason = "max_iterations"
 
-        if iter_flag > 5:
-            # temp_isolation = remain_od.Car21.sum()
-            # isolation.extend(remain_od.to_numpy().tolist())
-            # logging.info(
-            #     "Stop: Maximum iterations reached (5) with "
-            #     f"{temp_isolation} extra isolated flows. "
-            # )
-            logging.info("Stop: Maximum iterations reached (5)!")
+        if stop_reason is not None:
+            extra_assigned = 0.0
+            if capacity_mode:
+                # In capacity mode, keep final residual demand on known paths as overflow.
+                (
+                    road_links,
+                    extra_assigned,
+                    temp_isolation,
+                    iter_cost_fuel_over,
+                    iter_cost_time_over,
+                    iter_cost_toll_over,
+                    iter_cost_fare_over,
+                ) = apply_final_overflow_retention(
+                    conn=conn,
+                    road_links=road_links,
+                    time_expr=time_expr,
+                    fare_expr=fare_expr,
+                )
+
+                cost_fuel += iter_cost_fuel_over
+                cost_time += iter_cost_time_over
+                cost_toll += iter_cost_toll_over
+                cost_fare += iter_cost_fare_over
+                total_cost = cost_fuel + cost_time + cost_toll + cost_fare
+                assigned_sumod += extra_assigned
+            else:
+                temp_isolation = (
+                    conn.execute(
+                        "SELECT COALESCE(SUM(Car21), 0.0) FROM remain_od"
+                    ).fetchone()[0]
+                    or 0.0
+                )
+                if temp_isolation > 0:
+                    conn.execute(
+                        """
+                        INSERT INTO isolated_od
+                        SELECT
+                            origin_node,
+                            destination_node,
+                            Car21 AS flow
+                        FROM remain_od;
+                        """
+                    )
+
+            if stop_reason == "target_allocated":
+                logging.info(
+                    f"Stop: {percentage_sumod*100}% of flows have been allocated with "
+                    f"{temp_isolation} extra isolated flows."
+                )
+                if capacity_mode:
+                    logging.info(
+                        f"Capacity mode: assigned {extra_assigned} additional overflow flows "
+                        "on residual OD paths."
+                    )
+            else:
+                logging.info(
+                    "Stop: Maximum iterations reached (5) with "
+                    f"{temp_isolation} extra isolated flows. "
+                )
+                if capacity_mode:
+                    logging.info(
+                        f"Capacity mode: assigned {extra_assigned} additional overflow flows "
+                        "on residual OD paths."
+                    )
             break
 
         # %%
@@ -1075,10 +1722,48 @@ def network_flow_model(
         network, road_links = update_network_structure(
             number_of_edges, network, temp_edge_flow, road_links
         )
+
+        del temp_edge_flow
+        gc.collect()
+
         iter_flag += 1
 
     cList = [cost_time, cost_fuel, cost_toll, total_cost]
     road_links = road_links[road_links_columns]
+
+    # create isolation and odpfc from db
+    if iso_out_path is not None:
+        conn.execute(
+            f"""
+            COPY (
+                SELECT
+                    origin_node,
+                    destination_node,
+                    SUM(flow) AS flow
+                FROM isolated_od
+                GROUP BY origin_node, destination_node
+            ) TO '{iso_out_path}' (FORMAT PARQUET);
+        """
+        )
+    if odpfc_out_path is not None:
+        conn.execute(
+            f"""
+            COPY (
+                SELECT
+                    origin AS origin_node,
+                    destination AS destination_node,
+                    path,
+                    SUM(flow) AS flow,
+                    MIN(fuel) AS operating_cost_per_flow,
+                    MIN(time) AS time_cost_per_flow,
+                    MIN(toll) AS toll_cost_per_flow,
+                    MIN(fare) AS fare_cost_per_flow
+                FROM odpfc
+                GROUP BY origin, destination, path
+            ) TO '{odpfc_out_path}' (FORMAT PARQUET);
+        """
+        )
+    conn.close()
 
     logging.info("The flow simulation is completed!")
     logging.info(f"total travel cost is (£): {total_cost}")
@@ -1086,4 +1771,4 @@ def network_flow_model(
     logging.info(f"total operating cost is (£): {cost_fuel}")
     logging.info(f"total toll cost is (£): {cost_toll}")
 
-    return road_links, isolation, odpfc, cList
+    return road_links, cList
