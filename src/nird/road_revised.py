@@ -795,6 +795,7 @@ def itter_path(
     road_links,
     temp_flow_matrix: Optional[pd.DataFrame] = None,
     num_of_chunk: int = None,
+    num_of_cpu: Optional[int] = None,
     db_path: str = "results.duckdb",
     conn=None,
     temp_flow_table: Optional[str] = None,
@@ -806,6 +807,8 @@ def itter_path(
 
     if conn is None:
         conn = duckdb.connect(db_path)
+    if num_of_cpu is not None and num_of_cpu > 0:
+        conn.execute(f"PRAGMA threads={int(num_of_cpu)}")
 
     if temp_flow_table is not None:
         total_rows = (
@@ -1426,6 +1429,7 @@ def network_flow_model(
             road_links,
             temp_flow_matrix=None,
             num_of_chunk=num_of_chunk,
+            num_of_cpu=num_of_cpu,
             db_path=db_path,
             conn=conn,
             temp_flow_table="temp_flow_matrix_input",
