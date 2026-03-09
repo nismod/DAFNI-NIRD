@@ -1136,7 +1136,7 @@ def network_flow_model(
     initial_sumod = remain_od["Car21"].sum()
     assigned_sumod = 0
     iter_flag = 1
-    max_iterations = 4  # user-defined
+    max_iterations = 5  # user-defined
 
     # create db (remove the pre-exist one)
     if os.path.exists(db_path):
