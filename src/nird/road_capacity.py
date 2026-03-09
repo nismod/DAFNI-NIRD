@@ -742,6 +742,7 @@ def itter_path(
     temp_flow_matrix: Optional[pd.DataFrame] = None,
     num_of_chunk: int = None,
     num_of_cpu: Optional[int] = None,
+    apply_od_adjustment: bool = True,
     db_path: str = "results.duckdb",
     conn=None,
     temp_flow_table: Optional[str] = None,
@@ -971,255 +972,103 @@ def itter_path(
         f"Completed SQL path explosion and aggregation in DuckDB across {chunk_count} chunk(s)."
     )
 
-    # od results
-    # origin, destination, path, flow, cost
-    # 1) create base
-    conn.execute(
+    if apply_od_adjustment:
+        # od results
+        # origin, destination, path, flow, cost
+        # 1) create base
+        conn.execute(
+            """
+        CREATE OR REPLACE TEMP TABLE base AS
+        SELECT
+            e_id,
+            origin,
+            destination,
+            MAX(acc_capacity) AS acc_capacity,
+            SUM(flow) AS flow
+        FROM edge_flows
+        GROUP BY e_id, origin, destination;
         """
-    CREATE OR REPLACE TEMP TABLE base AS
-    SELECT
-        e_id,
-        origin,
-        destination,
-        MAX(acc_capacity) AS acc_capacity,
-        SUM(flow) AS flow
-    FROM edge_flows
-    GROUP BY e_id, origin, destination;
-    """
-    )
+        )
 
-    # 2) create total (per e_id)
-    conn.execute(
+        # 2) create total (per e_id)
+        conn.execute(
+            """
+        CREATE OR REPLACE TEMP TABLE total AS
+        SELECT e_id, SUM(flow) AS total_flow
+        FROM base
+        GROUP BY e_id;
         """
-    CREATE OR REPLACE TEMP TABLE total AS
-    SELECT e_id, SUM(flow) AS total_flow
-    FROM base
-    GROUP BY e_id;
-    """
-    )
+        )
 
-    # 3) create od_adjustment
-    conn.execute(
+        # 3) create od_adjustment
+        conn.execute(
+            """
+        CREATE OR REPLACE TEMP TABLE od_adjustment AS
+        SELECT
+            b.origin,
+            b.destination,
+            MIN(LEAST(b.acc_capacity / NULLIF(t.total_flow, 0), 1.0)) AS adjust_r
+        FROM base b
+        JOIN total t USING (e_id)
+        GROUP BY b.origin, b.destination;
         """
-    CREATE OR REPLACE TEMP TABLE od_adjustment AS
-    SELECT
-        b.origin,
-        b.destination,
-        MIN(LEAST(b.acc_capacity / NULLIF(t.total_flow, 0), 1.0)) AS adjust_r
-    FROM base b
-    JOIN total t USING (e_id)
-    GROUP BY b.origin, b.destination;
-    """
-    )
-    """
-    Example:
-    e_id | origin | destination | acc_capacity | flow | adsjust_r
-    -----|--------|-------------|--------------|------|---------
-    1    | A      | B           | 500          | 100  | min(500/100, 1) = 1.0
-    5    | A      | B           | 300          | 100  | min(300/100, 1) = 1.0
-    9    | A      | B           | 200          | 100  | min(200/100, 1) = 1.0
+        )
 
-    od_adjustment:
-    origin | destination | adjust_r
-    -------|-------------|---------
-    A      | B           | 1.0
-
-    """
-
-    # 4) final result
-    conn.execute(
         """
-    CREATE OR REPLACE TEMP TABLE temp_flow_matrix AS
-    SELECT
-        o.origin,
-        o.destination,
-        o.e_id,
-        o.flow * COALESCE(a.adjust_r, 1.0) AS flow,
-        o.fuel,
-        o.time,
-        o.toll,
-        o.length_mile
-    FROM od_results_iter o
-    LEFT JOIN od_adjustment a USING (origin, destination);
-    """
-    )
-    """
-    Example: -> od_results with od_adjustment
-    """
+        Example:
+        e_id | origin | destination | acc_capacity | flow | adsjust_r
+        -----|--------|-------------|--------------|------|---------
+        1    | A      | B           | 500          | 100  | min(500/100, 1) = 1.0
+        5    | A      | B           | 300          | 100  | min(300/100, 1) = 1.0
+        9    | A      | B           | 200          | 100  | min(200/100, 1) = 1.0
+
+        od_adjustment:
+        origin | destination | adjust_r
+        -------|-------------|---------
+        A      | B           | 1.0
+
+        """
+        # 4) final result with od adjustment
+        conn.execute(
+            """
+        CREATE OR REPLACE TEMP TABLE temp_flow_matrix AS
+        SELECT
+            o.origin,
+            o.destination,
+            o.e_id,
+            o.flow * COALESCE(a.adjust_r, 1.0) AS flow,
+            o.fuel,
+            o.time,
+            o.toll,
+            o.length_mile
+        FROM od_results_iter o
+        LEFT JOIN od_adjustment a USING (origin, destination);
+        """
+        )
+    else:
+        # Final-iteration capacity mode: keep all found-path flow (no OD scaling).
+        conn.execute(
+            """
+        CREATE OR REPLACE TEMP TABLE temp_flow_matrix AS
+        SELECT
+            o.origin,
+            o.destination,
+            o.e_id,
+            o.flow AS flow,
+            o.fuel,
+            o.time,
+            o.toll,
+            o.length_mile
+        FROM od_results_iter o;
+        """
+        )
+
     logging.info("Complete creating temp_flow_matrix table in Duckdb!")
 
     if temp_flow_table is not None:
         conn.execute(f"DROP TABLE IF EXISTS {temp_flow_table}")
 
     return
-
-
-def apply_final_overflow_retention(
-    conn: duckdb.DuckDBPyConnection,
-    road_links: gpd.GeoDataFrame,
-    time_expr: str,
-    fare_expr: str,
-) -> Tuple[gpd.GeoDataFrame, float, float, float, float, float, float]:
-    """Assign final residual OD demand as overflow on known paths.
-
-    Returns
-    -------
-    Tuple[gpd.GeoDataFrame, float, float, float, float, float, float]
-        Updated road links, extra assigned flow, residual isolated flow, and overflow
-        costs in order: fuel, time, toll, fare.
-    """
-    conn.execute(
-        """
-        CREATE OR REPLACE TEMP TABLE remain_overflow AS
-        SELECT
-            r.origin_node AS origin,
-            r.destination_node AS destination,
-            r.Car21 AS flow,
-            t.e_id,
-            t.fuel,
-            t.time,
-            t.toll,
-            t.length_mile
-        FROM remain_od r
-        JOIN temp_flow_matrix t
-            ON r.origin_node = t.origin
-           AND r.destination_node = t.destination
-        WHERE r.Car21 > 0;
-        """
-    )
-    extra_assigned = (
-        conn.execute("SELECT COALESCE(SUM(flow), 0.0) FROM remain_overflow").fetchone()[
-            0
-        ]
-        or 0.0
-    )
-
-    iter_cost_fuel_over = 0.0
-    iter_cost_time_over = 0.0
-    iter_cost_toll_over = 0.0
-    iter_cost_fare_over = 0.0
-
-    if extra_assigned > 0:
-        conn.execute(
-            f"""
-            INSERT INTO odpfc (
-                origin,
-                destination,
-                path,
-                flow,
-                fuel,
-                time,
-                toll,
-                fare
-            )
-            SELECT
-                origin,
-                destination,
-                e_id AS path,
-                flow,
-                fuel,
-                {time_expr} AS time,
-                toll,
-                {fare_expr} AS fare
-            FROM remain_overflow
-            """
-        )
-
-        iter_cost_fuel_over = (
-            conn.execute(
-                "SELECT COALESCE(SUM(flow * fuel), 0.0) FROM remain_overflow"
-            ).fetchone()[0]
-            or 0.0
-        )
-        iter_cost_time_over = (
-            conn.execute(
-                f"SELECT COALESCE(SUM(flow * {time_expr}), 0.0) FROM remain_overflow"
-            ).fetchone()[0]
-            or 0.0
-        )
-        iter_cost_toll_over = (
-            conn.execute(
-                "SELECT COALESCE(SUM(flow * toll), 0.0) FROM remain_overflow"
-            ).fetchone()[0]
-            or 0.0
-        )
-        iter_cost_fare_over = (
-            conn.execute(
-                f"SELECT COALESCE(SUM(flow * {fare_expr}), 0.0) FROM remain_overflow"
-            ).fetchone()[0]
-            or 0.0
-        )
-
-        temp_edge_flow_over = conn.execute(
-            """
-            SELECT
-                e AS e_id,
-                SUM(flow) AS flow
-            FROM (
-                SELECT
-                    flow,
-                    UNNEST(e_id) AS e
-                FROM remain_overflow
-            ) AS t
-            GROUP BY e
-        """
-        ).fetchdf()
-
-        road_links = road_links.merge(
-            temp_edge_flow_over[["e_id", "flow"]], on="e_id", how="left"
-        )
-        road_links["flow"] = road_links["flow"].fillna(0.0)
-        road_links["acc_flow"] += road_links["flow"]
-        road_links["acc_capacity"] = road_links["acc_capacity"] - road_links["flow"]
-        road_links.drop(columns=["flow"], inplace=True)
-
-        # update edge speed after overflow assignment
-        update_edge_speed(road_links, inplace=True)
-
-    conn.execute(
-        """
-        CREATE OR REPLACE TEMP TABLE remain_without_path AS
-        SELECT
-            r.origin_node,
-            r.destination_node,
-            r.Car21 AS flow
-        FROM remain_od r
-        LEFT JOIN remain_overflow o
-            ON r.origin_node = o.origin
-           AND r.destination_node = o.destination
-        WHERE o.origin IS NULL AND r.Car21 > 0;
-        """
-    )
-    temp_isolation = (
-        conn.execute(
-            "SELECT COALESCE(SUM(flow), 0.0) FROM remain_without_path"
-        ).fetchone()[0]
-        or 0.0
-    )
-    if temp_isolation > 0:
-        conn.execute(
-            """
-            INSERT INTO isolated_od
-            SELECT
-                origin_node,
-                destination_node,
-                flow
-            FROM remain_without_path;
-            """
-        )
-
-    conn.execute("DROP TABLE IF EXISTS remain_without_path")
-    conn.execute("DROP TABLE IF EXISTS remain_overflow")
-
-    return (
-        road_links,
-        extra_assigned,
-        temp_isolation,
-        iter_cost_fuel_over,
-        iter_cost_time_over,
-        iter_cost_toll_over,
-        iter_cost_fare_over,
-    )
 
 
 def network_flow_model(
@@ -1287,6 +1136,7 @@ def network_flow_model(
     initial_sumod = remain_od["Car21"].sum()
     assigned_sumod = 0
     iter_flag = 1
+    max_iterations = 4  # user-defined
 
     # create db (remove the pre-exist one)
     if os.path.exists(db_path):
@@ -1552,6 +1402,7 @@ def network_flow_model(
             temp_flow_matrix=None,
             num_of_chunk=num_of_chunk,
             num_of_cpu=num_of_cpu,
+            apply_od_adjustment=not (capacity_mode and iter_flag >= max_iterations),
             db_path=db_path,
             conn=conn,
             temp_flow_table="temp_flow_matrix_input",
@@ -1712,72 +1563,41 @@ def network_flow_model(
         stop_reason = None
         if percentage_sumod >= 0.99:
             stop_reason = "target_allocated"
-        elif iter_flag > 4:  # 5 iterations
+        elif iter_flag >= max_iterations:
             stop_reason = "max_iterations"
 
         if stop_reason is not None:
-            extra_assigned = 0.0
-            if capacity_mode:
-                # In capacity mode, keep final residual demand on known paths as overflow.
-                (
-                    road_links,
-                    extra_assigned,
-                    temp_isolation,
-                    iter_cost_fuel_over,
-                    iter_cost_time_over,
-                    iter_cost_toll_over,
-                    iter_cost_fare_over,
-                ) = apply_final_overflow_retention(
-                    conn=conn,
-                    road_links=road_links,
-                    time_expr=time_expr,
-                    fare_expr=fare_expr,
+            temp_isolation = (
+                conn.execute(
+                    "SELECT COALESCE(SUM(Car21), 0.0) FROM remain_od"
+                ).fetchone()[0]
+                or 0.0
+            )
+            if temp_isolation > 0:
+                conn.execute(
+                    """
+                    INSERT INTO isolated_od
+                    SELECT
+                        origin_node,
+                        destination_node,
+                        Car21 AS flow
+                    FROM remain_od;
+                    """
                 )
-
-                cost_fuel += iter_cost_fuel_over
-                cost_time += iter_cost_time_over
-                cost_toll += iter_cost_toll_over
-                cost_fare += iter_cost_fare_over
-                total_cost = cost_fuel + cost_time + cost_toll + cost_fare
-                assigned_sumod += extra_assigned
-            else:
-                temp_isolation = (
-                    conn.execute(
-                        "SELECT COALESCE(SUM(Car21), 0.0) FROM remain_od"
-                    ).fetchone()[0]
-                    or 0.0
-                )
-                if temp_isolation > 0:
-                    conn.execute(
-                        """
-                        INSERT INTO isolated_od
-                        SELECT
-                            origin_node,
-                            destination_node,
-                            Car21 AS flow
-                        FROM remain_od;
-                        """
-                    )
 
             if stop_reason == "target_allocated":
                 logging.info(
                     f"Stop: {percentage_sumod*100}% of flows have been allocated with "
                     f"{temp_isolation} extra isolated flows."
                 )
-                if capacity_mode:
-                    logging.info(
-                        f"Capacity mode: assigned {extra_assigned} additional overflow flows "
-                        "on residual OD paths."
-                    )
             else:
                 logging.info(
-                    "Stop: Maximum iterations reached (5) with "
+                    f"Stop: Maximum iterations reached ({max_iterations}) with "
                     f"{temp_isolation} extra isolated flows. "
                 )
                 if capacity_mode:
                     logging.info(
-                        f"Capacity mode: assigned {extra_assigned} additional overflow flows "
-                        "on residual OD paths."
+                        "Capacity mode: skipped OD adjustment on the final iteration."
                     )
             break
 
