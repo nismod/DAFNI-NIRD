@@ -1173,6 +1173,9 @@ def apply_final_overflow_retention(
         road_links["acc_capacity"] = road_links["acc_capacity"] - road_links["flow"]
         road_links.drop(columns=["flow"], inplace=True)
 
+        # update edge speed after overflow assignment
+        update_edge_speed(road_links, inplace=True)
+
     conn.execute(
         """
         CREATE OR REPLACE TEMP TABLE remain_without_path AS
