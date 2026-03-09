@@ -855,118 +855,169 @@ def itter_path(
         conn.unregister("temp_flow_matrix_input_mem_tmp")
         source_table = "temp_flow_matrix_input_mem"
 
-    conn.execute(
-        f"""
-        CREATE OR REPLACE TEMP TABLE exploded_paths AS
-        SELECT
-            t.origin,
-            t.destination,
-            t.flow,
-            list_extract(t.path, u.ord) AS path_idx,
-            u.ord AS path_ord
-        FROM {source_table} t
-        CROSS JOIN LATERAL (
-            SELECT UNNEST(range(1, array_length(t.path) + 1)) AS ord
-        ) AS u;
+    # Start the path explosion and aggregation in DuckDB with chunked process
+    chunk_count = int(num_of_chunk) if num_of_chunk and num_of_chunk > 0 else 1
+    chunk_count = max(1, min(chunk_count, total_rows))
+    chunk_size = (total_rows + chunk_count - 1) // chunk_count
+    created_results = False
+
+    for chunk_idx in range(chunk_count):
+        offset = chunk_idx * chunk_size
+        if offset >= total_rows:
+            break
+        limit = min(chunk_size, total_rows - offset)
+        conn.execute("DROP TABLE IF EXISTS exploded_paths_chunk")
+        conn.execute(
+            f"""
+            CREATE OR REPLACE TEMP TABLE exploded_paths_chunk AS
+            SELECT
+                t.origin,
+                t.destination,
+                t.flow,
+                list_extract(t.path, u.ord) AS path_idx,
+                u.ord AS path_ord
+            FROM (
+                SELECT *
+                FROM {source_table}
+                LIMIT {limit} OFFSET {offset}
+            ) t
+            CROSS JOIN LATERAL (
+                SELECT UNNEST(range(1, array_length(t.path) + 1)) AS ord
+            ) AS u;
+            """
+        )
+
         """
-    )
+        Example:
+        origin | destination | flow | path_idx |
+        -------|-------------|------|----------|
+        A      | B           | 100  | [1, 5, 9]|
 
-    """
-    Example:
-    origin | destination | flow | path_idx |
-    -------|-------------|------|----------|
-    A      | B           | 100  | [1, 5, 9]|
-
-    -> exploded_paths:
-    origin | destination | flow | path_idx | path_ord |
-    -------|-------------|------|----------|---------|
-    A      | B           | 100  | 1        | 1       |
-    A      | B           | 100  | 5        | 2       |
-    A      | B           | 100  | 9        | 3       |
-
-    """
-    conn.execute(
+        -> exploded_paths:
+        origin | destination | flow | path_idx | path_ord |
+        -------|-------------|------|----------|---------|
+        A      | B           | 100  | 1        | 1       |
+        A      | B           | 100  | 5        | 2       |
+        A      | B           | 100  | 9        | 3       |
         """
-        CREATE TABLE od_results_iter AS
-        SELECT
-            x.origin,
-            x.destination,
-            LIST(e.e_id ORDER BY x.path_ord) AS e_id,
-            MAX(x.flow) AS flow,
-            SUM(e.fuel) AS fuel,
-            SUM(e.time) AS time,
-            SUM(e.toll) AS toll,
-            SUM(e.length_mile) AS length_mile
-        FROM exploded_paths x
-        JOIN edges_attr e
-            ON x.path_idx = e.path
-        GROUP BY x.origin, x.destination;
+
+        od_sql = """
+            SELECT
+                x.origin,
+                x.destination,
+                LIST(e.e_id ORDER BY x.path_ord) AS e_id,
+                MAX(x.flow) AS flow,
+                SUM(e.fuel) AS fuel,
+                SUM(e.time) AS time,
+                SUM(e.toll) AS toll,
+                SUM(e.length_mile) AS length_mile
+            FROM exploded_paths_chunk x
+            JOIN edges_attr e
+                ON x.path_idx = e.path
+            GROUP BY x.origin, x.destination
         """
-    )
-    """
-    Example:
-     origin | destination | flow | path_idx | path_ord | fuel | time | toll | length_mile
-    -------|-------------|------|----------|---------|------|------|------|-------------
-    A      | B           | 100  | 1        | 1       | 10   | 0.5  | 2    | 5
-    A      | B           | 100  | 5        | 2       | 20   | 1.0  | 0    | 3
-    A      | B           | 100  | 9        | 3       | 15   | 0.8  | 1    | 4
 
-    -> od_results:
-    origin | destination | flow | e_id       | fuel | time | toll | length_mile
-    -------|-------------|------|------------|------|------|------|-------------
-    A      | B           | 100  | [1, 5, 9]  | 45   | 2.3  | 3    | 12
-    """
-
-    conn.execute(
         """
-        CREATE TABLE edge_flows AS
-        SELECT
-            e.e_id,
-            x.origin,
-            x.destination,
-            MAX(c.acc_capacity) AS acc_capacity,
-            SUM(x.flow) AS flow
-        FROM exploded_paths x
-        JOIN edges_attr e
-            ON x.path_idx = e.path
-        LEFT JOIN road_caps c
-            ON e.e_id = c.e_id
-        GROUP BY e.e_id, x.origin, x.destination;
+        Example:
+        origin | destination | flow | path_idx | path_ord | fuel | time | toll | length_mile
+        -------|-------------|------|----------|---------|------|------|------|-------------
+        A      | B           | 100  | 1        | 1       | 10   | 0.5  | 2    | 5
+        A      | B           | 100  | 5        | 2       | 20   | 1.0  | 0    | 3
+        A      | B           | 100  | 9        | 3       | 15   | 0.8  | 1    | 4
+
+        -> od_results:
+        origin | destination | flow | e_id       | fuel | time | toll | length_mile
+        -------|-------------|------|------------|------|------|------|-------------
+        A      | B           | 100  | [1, 5, 9]  | 45   | 2.3  | 3    | 12
         """
-    )
 
-    """
-    Example:
-    origin | destination | flow | path_idx | path_ord
-    -------|-------------|------|----------|---------
-    A      | B           | 100  | 1        | 1
-    A      | B           | 100  | 5        | 2
-    A      | B           | 100  | 9        | 3
-    -> join with edge attributes:
-    origin | destination | flow | path_idx | path_ord | e_id
-    -------|-------------|------|----------|---------|------
-    A      | B           | 100  | 1        | 1       | 1
-    A      | B           | 100  | 5        | 2       | 5
-    A      | B           | 100  | 9        | 3       | 9
-    -> join with road_caps:
-    origin | destination | flow | path_idx | path_ord | e_id | acc_capacity
-    -------|-------------|------|----------|---------|------|-------------
-    A      | B           | 100  | 1        | 1       | 1    | 500
-    A      | B           | 100  | 5        | 2       | 5    | 300
-    A      | B           | 100  | 9        | 3       | 9    | 200
+        edge_sql = """
+            SELECT
+                e.e_id,
+                x.origin,
+                x.destination,
+                MAX(c.acc_capacity) AS acc_capacity,
+                SUM(x.flow) AS flow
+            FROM exploded_paths_chunk x
+            JOIN edges_attr e
+                ON x.path_idx = e.path
+            LEFT JOIN road_caps c
+                ON e.e_id = c.e_id
+            GROUP BY e.e_id, x.origin, x.destination
+        """
 
-    -> edge_flows (group by e_id, origin, destination):
-    e_id | origin | destination | acc_capacity | flow
-    -----|--------|-------------|--------------|------
-    1    | A      | B           | 500          | 100
-    5    | A      | B           | 300          | 100
-    9    | A      | B           | 200          | 100
-    """
-    conn.execute("DROP TABLE IF EXISTS exploded_paths")
+        """
+        Example:
+        origin | destination | flow | path_idx | path_ord
+        -------|-------------|------|----------|---------
+        A      | B           | 100  | 1        | 1
+        A      | B           | 100  | 5        | 2
+        A      | B           | 100  | 9        | 3
+
+        -> join with edge attributes:
+        origin | destination | flow | path_idx | path_ord | e_id
+        -------|-------------|------|----------|---------|------
+        A      | B           | 100  | 1        | 1       | 1
+        A      | B           | 100  | 5        | 2       | 5
+        A      | B           | 100  | 9        | 3       | 9
+
+        -> join with road_caps:
+        origin | destination | flow | path_idx | path_ord | e_id | acc_capacity
+        -------|-------------|------|----------|---------|------|-------------
+        A      | B           | 100  | 1        | 1       | 1    | 500
+        A      | B           | 100  | 5        | 2       | 5    | 300
+        A      | B           | 100  | 9        | 3       | 9    | 200
+
+        -> edge_flows (group by e_id, origin, destination):
+        e_id | origin | destination | acc_capacity | flow
+        -----|--------|-------------|--------------|------
+        1    | A      | B           | 500          | 100
+        5    | A      | B           | 300          | 100
+        9    | A      | B           | 200          | 100
+        """
+
+        if not created_results:
+            conn.execute(f"CREATE TABLE od_results_iter AS {od_sql};")
+            conn.execute(f"CREATE TABLE edge_flows AS {edge_sql};")
+            created_results = True
+        else:
+            conn.execute(f"INSERT INTO od_results_iter {od_sql};")
+            conn.execute(f"INSERT INTO edge_flows {edge_sql};")
+
+        conn.execute("DROP TABLE IF EXISTS exploded_paths_chunk")
+
+    if not created_results:
+        conn.execute(
+            """
+            CREATE TABLE od_results_iter (
+                origin VARCHAR,
+                destination VARCHAR,
+                e_id VARCHAR[],
+                flow DOUBLE,
+                fuel DOUBLE,
+                time DOUBLE,
+                toll DOUBLE,
+                length_mile DOUBLE
+            );
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE edge_flows (
+                e_id VARCHAR,
+                origin VARCHAR,
+                destination VARCHAR,
+                acc_capacity DOUBLE,
+                flow DOUBLE
+            );
+            """
+        )
     if source_table == "temp_flow_matrix_input_mem":
         conn.execute("DROP TABLE IF EXISTS temp_flow_matrix_input_mem")
 
-    logging.info("Completed SQL path explosion and aggregation in DuckDB.")
+    logging.info(
+        f"Completed SQL path explosion and aggregation in DuckDB across {chunk_count} chunk(s)."
+    )
 
     # od results
     # origin, destination, path, flow, cost
