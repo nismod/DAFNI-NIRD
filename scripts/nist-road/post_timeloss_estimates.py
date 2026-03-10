@@ -5,7 +5,7 @@ import geopandas as gpd  # type: ignore
 import warnings
 from tqdm import tqdm
 import gc
-
+import ast
 import json
 import logging
 import sys
@@ -30,6 +30,7 @@ def calculate_time(edge_flow):
 
 def process_chunk(chunk, edge_flow):
     chunk = chunk.reset_index(drop=False).rename(columns={"index": "__od_idx"})
+    chunk["path"] = chunk["path"].apply(ast.literal_eval)
     explored = chunk.explode("path").rename(columns={"path": "e_id"})
     merged = explored.merge(edge_flow, on="e_id", how="left")
     agg = merged.groupby("__od_idx", sort=False)[
@@ -49,7 +50,7 @@ def process_chunk(chunk, edge_flow):
 
 def main(future_year, future_scenario):
     # load model inputs
-    with open(nist_path/ "tables" / "node_to_lad24.json", "rb") as f:
+    with open(nist_path/ "tables" / "node_to_lad24_updated.json", "rb") as f:
         node_to_lad = json.load(f)
     lad = gpd.read_parquet(nist_path / "admins" / "lad24_shp.gpq")
 
@@ -61,6 +62,10 @@ def main(future_year, future_scenario):
     od = pd.read_parquet(
         nist_path.parent / "outputs" / f"odpfc_{future_year}_{future_scenario}.pq"
     )
+    # od["path"] = od["path"].apply(ast.literal_eval)
+    print(od.loc[0, "path"][0:50])
+    sys.exit(0)
+
     # chunked process
     chunksize = 100_000
     results = []
@@ -80,11 +85,14 @@ def main(future_year, future_scenario):
     del results
     gc.collect()
 
+    print(res_df.columns)
+    print(res_df)
     od = od.join(res_df, how="left")
     od["timeloss(sec/km)"] = (
         1 / (od.total_length_miles / od.total_time_congested.replace(0, np.nan))
         - 1 / (od.total_length_miles / od.total_time_free.replace(0, np.nan))
     ) * 37.3
+    print(od)
     od["LAD24CD"] = od["origin_node"].map(node_to_lad)
     agg = (
         od[["LAD24CD", "total_time_free", "total_time_congested", "timeloss(sec/km)"]]
