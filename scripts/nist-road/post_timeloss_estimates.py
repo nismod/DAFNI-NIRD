@@ -33,7 +33,7 @@ def process_chunk(chunk, edge_flow):
     explored = chunk.explode("path").rename(columns={"path": "e_id"})
     merged = explored.merge(edge_flow, on="e_id", how="left")
     agg = merged.groupby("__od_idx", sort=False)[
-        ["length_miles" "time_free", "time_congested"]
+        ["length_miles", "time_free", "time_congested"]
     ].sum()
     agg = agg.reindex(range(len(chunk)), fill_value=0).reset_index(drop=True)
     agg = agg.rename(
@@ -94,11 +94,11 @@ def main(future_year, future_scenario):
     )
     merged = lad.merge(agg, on="LAD24CD", how="left")
     merged.to_parquet(
-        nist_path / "outputs" / f"lad24_time_{future_year}_{future_scenario}.gpq"
+        nist_path.parent / "outputs" / f"lad24_time_{future_year}_{future_scenario}.gpq"
     )
 
     od.drop(columns=["path", "orig_index"], inplace=True)
-    od.to_parquet(nist_path / "outputs" / f"od_time_{future_year}_{future_scenario}.pq")
+    od.to_parquet(nist_path.parent / "outputs" / f"od_time_{future_year}_{future_scenario}.pq")
 
 
 if __name__ == "__main__":
