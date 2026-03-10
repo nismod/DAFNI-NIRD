@@ -1,26 +1,22 @@
 # %%
+import sys
 from pathlib import Path
 import pandas as pd
 import numpy as np
 import geopandas as gpd
 from nird.utils import load_config
 import logging
+import warnings
 
+warnings.simplefilter("ignore")
 nist_path = Path(load_config()["paths"]["NIST"])
 
 
 # %%
 def compute_congestion(future_year, future_scenario):
-    if future_year == 21:
-        flow = gpd.read_parquet(
-            nist_path.parent / "outputs" / f"edge_flow_{future_year}.gpq"
-        )
-    else:
-        flow = gpd.read_parquet(
-            nist_path.parent
-            / "outputs"
-            / f"edge_flow_{future_year}_{future_scenario}.gpq"
-        )
+    flow = gpd.read_parquet(
+        nist_path.parent / "outputs" / f"edge_flow_{future_year}_{future_scenario}.gpq"
+    )
     flow["length_m"] = flow.geometry.length
     flow["UR"] = flow.acc_flow / (
         flow.acc_flow + flow.acc_capacity
@@ -96,7 +92,7 @@ def compute_congestion(future_year, future_scenario):
 
     lad_with_stats["URw/HIR"] = (
         lad_with_stats["UR_length_weighted"]
-        / lad_with_stats[f"HIR(2021-{future_year})"]
+        / lad_with_stats[f"HIR(2021-20{future_year})"]
     )
 
     return lad_with_stats
