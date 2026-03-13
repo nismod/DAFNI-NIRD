@@ -78,8 +78,9 @@ def main(future_year, future_scenario):
     od = pd.read_parquet(
         nist_path.parent / "outputs" / f"odpfc_{future_year}_{future_scenario}.pq"
     )
-    test = od.head(1000)
-    test.to_parquet(nist_path.parent / "outputs" / "od_test.pq")
+    # test = od.drop(columns = ["path"])
+    # test.to_parquet(nist_path.parent / "outputs" / f"odfc_{future_year}_{future_scenario}.pq")
+    # sys.exit(0)
 
     # chunked process
     chunksize = 100_000
@@ -107,9 +108,9 @@ def main(future_year, future_scenario):
         1 / (od.total_length_miles / od.total_time_congested.replace(0, np.nan))
         - 1 / (od.total_length_miles / od.total_time_free.replace(0, np.nan))
     ) * 37.3
-    print(od)
 
     od["LAD24CD"] = od["origin_node"].map(node_to_lad)
+    """
     agg = (
         od[["LAD24CD", "total_time_free", "total_time_congested", "timeloss(sec/km)"]]
         .groupby(by="LAD24CD")
@@ -120,6 +121,7 @@ def main(future_year, future_scenario):
     merged.to_parquet(
         nist_path.parent / "outputs" / f"lad24_time_{future_year}_{future_scenario}.gpq"
     )
+    """
     od.drop(columns=["path", "orig_index"], inplace=True)
     od.to_parquet(
         nist_path.parent / "outputs" / f"od_time_{future_year}_{future_scenario}.pq"
