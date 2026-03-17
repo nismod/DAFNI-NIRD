@@ -41,7 +41,10 @@ panel_configs = [
 
 
 def prepare_rank_data(
-    dataframe: pd.DataFrame, scenario_cols: list[str], scenario_labels: list[str]
+    dataframe: pd.DataFrame,
+    scenario_cols: list[str],
+    scenario_labels: list[str],
+    selected_cities: list[str],
 ):
     ranked = dataframe[["TCITY15NM", *scenario_cols]].copy()
     rank_col_names = []
@@ -51,7 +54,9 @@ def prepare_rank_data(
         ranked[rank_col] = ranked[column_name].rank(ascending=False, method="min")
         rank_col_names.append(rank_col)
         scenario_map[rank_col] = display_name
-    rank_df = ranked[["TCITY15NM", *rank_col_names]]
+    rank_df = ranked.loc[
+        ranked["TCITY15NM"].isin(selected_cities), ["TCITY15NM", *rank_col_names]
+    ]
     rank_melted = rank_df.melt(
         id_vars="TCITY15NM", var_name="Scenario", value_name="Rank"
     )
@@ -121,15 +126,14 @@ def plot_bump_panel(
     sns.despine(ax=ax, left=True, bottom=True)
 
 
-fig, axes = plt.subplots(1, 2, figsize=(24, 10), sharey=False)
+fig, axes = plt.subplots(1, 2, figsize=(24, 11), sharey=False)
 max_rank = 0
 
 for ax, panel in zip(axes, panel_configs):
     top_cities = (
         df.sort_values(panel["sort_by"], ascending=False).head(15)["TCITY15NM"].tolist()
     )
-    subset = df[df["TCITY15NM"].isin(top_cities)].copy()
-    rank_melted = prepare_rank_data(subset, panel["columns"], panel["labels"])
+    rank_melted = prepare_rank_data(df, panel["columns"], panel["labels"], top_cities)
     max_rank = max(max_rank, int(rank_melted["Rank"].max()))
     plot_bump_panel(ax, rank_melted, top_cities, panel["title"])
 
