@@ -9,6 +9,7 @@ from nird.utils import load_config
 warnings.simplefilter("ignore")
 dafni_path = Path(load_config()["paths"]["base_path"])
 nist_path = Path(load_config()["paths"]["nist_path"])
+nist_path = nist_path / "incoming" / "20260216 - inputs to OxfUni models"
 
 
 def find_nearest_node(
@@ -85,8 +86,8 @@ od_node_hhh = od[
 # %%
 # export results
 od_node_hhh.to_parquet(
-    nist_path / "processed" / "od_node_hhh_estimates.pq", index=False
+    nist_path / "outputs" / "roads" / "od_node_hhh_estimates.pq", index=False
 )
 od_node_ppp.to_parquet(
-    nist_path / "processed" / "od_node_ppp_estimates.pq", index=False
+    nist_path / "outputs" / "roads" / "od_node_ppp_estimates.pq", index=False
 )
