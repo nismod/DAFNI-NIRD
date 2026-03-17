@@ -116,6 +116,8 @@ for idx, row in weekly_schedule.iterrows():
 # estimate the operating trains of each day
 """
 overall length of dates: 20250518-20251213
+2025-05-18: Sunday (Weekend)
+2025-05-19: Monday (Weekday)
 """
 daily_schedule = defaultdict(set)
 start_date = datetime.datetime.strptime("2025-05-18", "%Y-%m-%d")
