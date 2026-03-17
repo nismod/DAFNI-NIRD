@@ -9,6 +9,7 @@ from nird.utils import load_config
 warnings.simplefilter("ignore")
 dafni_path = Path(load_config()["paths"]["base_path"])
 nist_path = Path(load_config()["paths"]["nist_path"])
+nist_path = nist_path / "incoming" / "20260216 - inputs to OxfUni models"
 
 
 # %%
@@ -127,5 +128,9 @@ od_ppp["Car30"] = od_ppp["Car30"].round().astype(int)
 od_ppp["Car50"] = od_ppp["Car50"].round().astype(int)
 od_hhh["Car30"] = od_hhh["Car30"].round().astype(int)
 od_hhh["Car50"] = od_hhh["Car50"].round().astype(int)
-od_ppp.to_parquet(nist_path / "processed" / "od_oa_ppp_estimates.pq", index=False)
-od_hhh.to_parquet(nist_path / "processed" / "od_oa_hhh_estimates.pq", index=False)
+od_ppp.to_parquet(
+    nist_path / "outputs" / "roads" / "od_oa_ppp_estimates.pq", index=False
+)
+od_hhh.to_parquet(
+    nist_path / "outputs" / "roads" / "od_oa_hhh_estimates.pq", index=False
+)
