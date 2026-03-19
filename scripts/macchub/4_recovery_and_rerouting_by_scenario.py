@@ -90,7 +90,7 @@ def main(
         / "outputs"
         / "rerouting_analysis"
         / "dbs"
-        / f"recovery_{event_key}_{scenario_idx}.duckdb"
+        / f"recovery_{event_key}_{scenario_idx}_baseline.duckdb"
     )
     logging.info(f"Database path is: {db_path}")
     out_path = macchub_path.parent / "outputs" / "rerouting_analysis" / str(event_key)
@@ -114,7 +114,7 @@ def main(
         / "outputs"
         / "rerouting_analysis"
         / "od"
-        / f"odpfc_{event_key}.pq",
+        / f"odpfc_{event_key}_baseline.pq",
         engine="fastparquet",
     )
     disrupted_candidates["od_id"] = disrupted_candidates.index  # numbering od pairs
@@ -125,7 +125,7 @@ def main(
         / "outputs"
         / "disruption_analysis"
         / "links"
-        / f"road_links_{event_key}_future.gpq"
+        / f"road_links_{event_key}_baseline.gpq"
     )
     road_links["breakpoint_flows"] = road_links["combined_label"].map(
         flow_breakpoint_dict
