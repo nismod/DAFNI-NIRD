@@ -9,7 +9,6 @@ import pandas as pd
 import geopandas as gpd
 from tqdm import tqdm
 
-import pyarrow as pa
 import pyarrow.dataset as ds
 
 from nird.utils import load_config
@@ -51,9 +50,7 @@ def process_chunk(df_chunk: pd.DataFrame, flood_links_set: Set) -> pd.DataFrame:
     mask_str = df["path"].apply(lambda x: isinstance(x, str))
     if mask_str.any():
         # use findall to extract tokens like roade_123
-        df.loc[mask_str, "path"] = (
-            df.loc[mask_str, "path"].str.findall(r"[\w_]+")
-        )
+        df.loc[mask_str, "path"] = df.loc[mask_str, "path"].str.findall(r"[\w_]+")
 
     # now compute flood_links column
     df["flood_links"] = df["path"].apply(lambda p: find_flood_links(p, flood_links_set))
@@ -64,7 +61,7 @@ def process_chunk(df_chunk: pd.DataFrame, flood_links_set: Set) -> pd.DataFrame:
 
 
 # %%
-def main(event_key: str, chunk_size: int = CHUNK_SIZE, consolidate: bool = False):
+def main(event_key: str, chunk_size: int = CHUNK_SIZE, consolidate: bool = True):
     """
     event_key: e.g. 'england'
     chunk_size: number of rows per pyarrow scanner record_batch
@@ -73,14 +70,17 @@ def main(event_key: str, chunk_size: int = CHUNK_SIZE, consolidate: bool = False
     """
     logging.info(f"Loading road links for event {event_key}...")
     road_links = gpd.read_parquet(
-        macc_path / "damages" / "links" / f"road_links_{event_key}_future.gpq"
+        out_path
+        / "disruption_analysis"
+        / "links"
+        / f"road_links_{event_key}_baseline.gpq"
     )  # england, wales, and scotland
     flood_links = road_links.loc[road_links.flood_depth_max > 0, "e_id"]
     flood_links_set = set(flood_links.tolist())
     logging.info(f"Found {len(flood_links_set)} flooded links.")
 
     # Use pyarrow dataset to stream base_od in batches
-    base_od_path = str(macc_path / "damages" / "od" / "odpfc_2050_ssp5.pq")
+    base_od_path = str(out_path / "disruption_analysis" / "od" / "odpfc_2021_ssp0.pq")
     dataset = ds.dataset(base_od_path, format="parquet")
 
     scanner = dataset.scanner(batch_size=chunk_size)
@@ -95,7 +95,13 @@ def main(event_key: str, chunk_size: int = CHUNK_SIZE, consolidate: bool = False
         disrupted = process_chunk(df_chunk, flood_links_set)
 
         if not disrupted.empty:
-            part_file = out_path / f"odpfc_{event_key}_part{i:04d}.pq"
+            part_file = (
+                out_path
+                / "rerouting_analysis"
+                / "od"
+                / "temp"
+                / f"odpfc_{event_key}_part{i:04d}.pq"
+            )
             # Use pandas to_parquet; parquet engine default is pyarrow
             disrupted.to_parquet(part_file, index=False)
             part_files.append(part_file)
@@ -106,10 +112,14 @@ def main(event_key: str, chunk_size: int = CHUNK_SIZE, consolidate: bool = False
     logging.info("Chunk processing complete.")
 
     if consolidate and part_files:
-        logging.info("Consolidating part files into single parquet (this may use more memory)...")
+        logging.info(
+            "Consolidating part files into single parquet (this may use more memory)..."
+        )
         # Read each part and append to a list of dataframes (avoid reading all at once if huge)
         # We'll stream read and write into a single resultant parquet by concatenating in chunks
-        combined_file = out_path / f"odpfc_{event_key}.pq"
+        combined_file = (
+            out_path / "rerouting_analysis" / "od" / f"odpfc_{event_key}_baseline.pq"
+        )
         # Simple approach: read parts one by one and append to a single file by collecting and writing in one concat
         # If dataset is too large for memory, consider using pyarrow.parquet writer to append batches.
         df_list = []
@@ -117,7 +127,9 @@ def main(event_key: str, chunk_size: int = CHUNK_SIZE, consolidate: bool = False
             df_list.append(pd.read_parquet(pf))
         combined = pd.concat(df_list, ignore_index=True)
         combined.to_parquet(combined_file, index=False)
-        logging.info(f"Wrote consolidated file {combined_file.name} ({len(combined)} rows).")
+        logging.info(
+            f"Wrote consolidated file {combined_file.name} ({len(combined)} rows)."
+        )
         # Optionally remove parts
         for pf in part_files:
             try:
@@ -126,7 +138,8 @@ def main(event_key: str, chunk_size: int = CHUNK_SIZE, consolidate: bool = False
                 logging.warning(f"Could not remove temporary part file {pf}")
     elif part_files:
         logging.info(
-            f"Finished. {len(part_files)} part files created in {out_path}. You can consolidate later if needed."
+            f"Finished. {len(part_files)} part files. "
+            "You can consolidate later if needed."
         )
     else:
         logging.info("No disrupted rows found; no output files produced.")
@@ -145,7 +158,7 @@ if __name__ == "__main__":
             chunk_size = int(sys.argv[2]) if len(sys.argv) > 2 else CHUNK_SIZE
         except Exception:
             chunk_size = CHUNK_SIZE
-        consolidate_flag = False
+        consolidate_flag = True  # return consolidated file and remove the subparts
         if len(sys.argv) > 3:
             consolidate_flag = sys.argv[3].lower() in ("1", "true", "yes", "y")
         main(event_key, chunk_size=chunk_size, consolidate=consolidate_flag)
