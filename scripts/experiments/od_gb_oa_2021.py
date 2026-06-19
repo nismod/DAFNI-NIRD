@@ -6,6 +6,7 @@ Input OD matrix: Number of travel-to-work trips, UK, 2011, Multi-admins
 Output OD matrix: Numnber of travel-to-work trips, GB, 2021, OA level.
 """
 
+# %%
 from pathlib import Path
 import os
 import pandas as pd
@@ -85,7 +86,7 @@ od11_Scot_oa = od11_Scot_oa[
 od11_Scot_oa.reset_index(drop=True, inplace=True)
 
 # Trip Classification
-# within Scotland (oa-oa) -> keep
+# within Scotland (oa-oa)
 od11_scotoa_scotoa = od11_Scot_oa[od11_Scot_oa.to_region != "msoa_enw"]
 od11_scotoa_scotoa.reset_index(drop=True, inplace=True)
 
@@ -128,7 +129,7 @@ for oa11 in oa11_to_oa21_dict.keys():
         oa11_oa21_pop21[oa11][oa21] = pop21  # 2021 OA population
 
 # %%
-# Estimate msoa11_oa21_pop21
+# Estimate msoa11_oa21_pop21 (trip projection, 2021)
 msoa11_oa21_pop21 = defaultdict(lambda: defaultdict(list))
 for msoa11, list_of_oa11 in msoa11_oa11_pop11.items():
     for oa11 in list_of_oa11.keys():
@@ -197,7 +198,9 @@ temp_df = temp_df.groupby(
 
 # %%
 # combine dataframes
-# Scotland (from OA to OA)
+# od11_scotoa_scotoa: estimated 2021 commuting trips (car-drivers) within Scotland
+# temp_df: estimated 2021 commuting trips (car-drivers) from Scotland to the rest of GB
+# od21_enw_oa: census od 2021 commuting trips (all modes) from England and Wales to GB
 temp_od11_scotoa_scotoa = od11_scotoa_scotoa[
     ["Area of usual residence", "Area of workplace", "travel21"]
 ]
@@ -205,7 +208,7 @@ od21_scot_oa = pd.concat([temp_df, temp_od11_scotoa_scotoa], axis=0, ignore_inde
 od21_scot_oa.rename(columns={"travel21": "Car21"}, inplace=True)
 
 # %%
-# England and Wales (from OA to OA: real observation data)
+# England and Wales (from OA to OA: real observation data) -> commuting flows by all modes
 od21_enw_oa = pd.read_csv(os.path.join(base_path, "od_enw_2021\\ODWP01EW_OA.csv"))
 od21_enw_oa.rename(
     columns={
@@ -215,6 +218,8 @@ od21_enw_oa.rename(
     },
     inplace=True,
 )
+
+# %%
 od21_enw_oa = od21_enw_oa[
     (od21_enw_oa["Place of work indicator (4 categories) code"] == 3)
     & (od21_enw_oa["Area of usual residence"] != od21_enw_oa["Area of workplace"])
@@ -222,8 +227,9 @@ od21_enw_oa = od21_enw_oa[
 od21_enw_oa = od21_enw_oa[["Area of usual residence", "Area of workplace", "Car21"]]
 
 # remove North Irland
-od21_enw_oa = od21_enw_oa[~od21_enw_oa["Area of workplace"].str.startswith("N")]
-od21_enw_oa.reset_index(drop=True, inplace=True)
+od21_enw_oa = od21_enw_oa[
+    ~od21_enw_oa["Area of workplace"].str.startswith("N")
+].reset_index(drop=True)
 
 # %%
 # Combined OD 2021 at OA level
