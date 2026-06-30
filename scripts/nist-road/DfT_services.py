@@ -9,6 +9,7 @@ from tqdm.auto import tqdm
 
 base_dir = Path(r"C:\Oxford\Research\NIST\DfT Model\processed_data")
 nist_dir = Path(r"C:\Oxford\Research\NIST\local\data\processed")
+dafni_dir = Path(r"C:\Oxford\Research\DAFNI\local\processed_data")
 
 
 # %%
@@ -62,29 +63,41 @@ def filter_by_attraction(row):
 # source | production | attraction | list of destinations | list of destination attractions
 # load network components
 # To check network connectivity (components) - good!
-nodes = gpd.read_parquet(nist_dir / "England_road_nodes_with_bridges.gpq")
+# nodes = gpd.read_parquet(nist_dir / "England_road_nodes_with_bridges.gpq")
+# edges = gpd.read_parquet(nist_dir / "England_links_with_time.gpq")  # 0.4 million edges
+nodes = gpd.read_parquet(base_dir / "networks" / "road_nodes_gb.gpq")
 nodes.rename(columns={"id": "node_id"}, inplace=True)
-edges = gpd.read_parquet(nist_dir / "England_links_with_time.gpq")  # 0.4 million edges
+edges = gpd.read_parquet(base_dir / "networks" / "road_edges_gb.gpq")
 
 # %%
-lut = pd.read_csv(base_dir / "simulation" / "lut.csv")
+lut = pd.read_parquet(base_dir / "simulation" / "gb_lut.pq")
 msoa11cd_to_msoa21cd = lut.set_index("MSOA11CD")["MSOA21CD"].to_dict()
 oa21cd_to_msoa21cd = lut.set_index("OA21CD")["MSOA21CD"].to_dict()
 oa21cd_to_lsoa11cd = lut.set_index("OA21CD")["LSOA11CD"].to_dict()
 with open(base_dir / "simulation" / "zonename_to_msoa11cd.json", "r") as f:
-    zonename_to_msoa11cd = json.load(f)
-with open(base_dir / "simulation" / "msoa21_to_oa21_pop.json", "r") as f:
-    msoa21_to_oa21_ratio = json.load(f)
-# with open(base_dir / "simulation" / "msoa11_to_msoa21.json", "r") as f:
-#     msoa11cd_to_msoa21cd = json.load(f)
-# with open(base_dir / "simulation" / "oa21cd_to_lsoa11cd.json", "r") as f:
-#     oa21cd_to_lsoa11cd = json.load(f)
+    zonename_to_msoa11cd = json.load(
+        f
+    )  # convert from DFT zones to MSOA11 for England and Wales
+scot_df = pd.read_csv(base_dir / "simulation" / "scot_zone_msoa21_popshare.csv")
+scotzone_to_msoa21_popshare_df = (
+    scot_df.groupby("ZoneName")
+    .agg({"MSOA21CD": list, "MSOA_POP_SHARE": list})
+    .reset_index()
+)  # downscaling factor from ZoneName to MSOA21CD (Scotland)
+
+gb_df = pd.read_csv(base_dir / "simulation" / "msoa21_oa21_popshare.csv")
+msoa21_to_oa21_popshare_df = (
+    gb_df.groupby("MSOA21CD").agg({"OA21CD": list, "OA_POP_SHARE": list}).reset_index()
+)  # downscaling factor from MOSA21CD to OA21CD (GB)
 
 # %%
 # To generate OD for other services (downscale from MSOA to OA level)
 # load PA at msoa level
-purpose = "Town"  # Town, Employment, Education
-df_pa = pd.read_csv(base_dir / "simulation" / "PA_MSOA11CD_CarEducation_2021.csv")
+purpose = "Comm"  # Town, Employment, Education
+year = 2050
+df_pa = pd.read_csv(
+    base_dir / "simulation" / f"PA_MSOA11CD_Car{purpose}_{year}.csv"
+)  # baseline scenario: 2021, future scenario: 2050
 df_pa.loc[
     df_pa["ZoneName"].str.contains("King`s Lynn and West Norfolk", na=False),
     "ZoneName",
@@ -98,46 +111,48 @@ df_pa["MSOA11CD"] = df_pa["ZoneName"].map(zonename_to_msoa11cd)
 df_pa = df_pa[df_pa.MSOA11CD.notnull()].reset_index(drop=True)
 df_pa["MSOA21CD"] = df_pa["MSOA11CD"].map(msoa11cd_to_msoa21cd)
 
-# %%
+# for scotland
+df_pa_scot = df_pa[df_pa.MSOA21CD.isnull()]  # 499
+df_pa_scot.drop(columns=["MSOA21CD"], inplace=True)
+df_pa_scot = df_pa_scot.merge(scotzone_to_msoa21_popshare_df, on="ZoneName", how="left")
+df_pa_scot = df_pa_scot.explode(["MSOA21CD", "MSOA_POP_SHARE"], ignore_index=True)
+
+# for england and wales
+df_pa_ew = df_pa[df_pa.MSOA21CD.notnull()]  # 7201
+df_pa_ew["MSOA_POP_SHARE"] = 1
+
+# combined df at MSOA level
+df_pa = pd.concat([df_pa_ew, df_pa_scot], axis=0).reset_index(drop=True)  # 11_308
+
+# downscale from MSOA21 to OA21
+df_pa = df_pa.merge(msoa21_to_oa21_popshare_df, on="MSOA21CD", how="left")
+df_pa = df_pa.explode(["OA21CD", "OA_POP_SHARE"], ignore_index=True)  # 337_637
+
 # downscale from MSOA to OA level
+# for England and Wales
 # Columns that should NOT be scaled
-id_cols = ["ZoneID", "ZoneName", "Authority", "MSOA11CD", "MSOA21CD"]
-
-# Everything else will be distributed
-value_cols = [c for c in df_pa.columns if c not in id_cols]
-rows = []
-for _, row in df_pa.iterrows():
-    msoa = row["MSOA21CD"]
-    if msoa not in msoa21_to_oa21_ratio:
-        continue
-
-    for oa, ratio in msoa21_to_oa21_ratio[msoa].items():
-        new_row = row.copy()
-        new_row["OA21CD"] = oa
-        for col in value_cols:
-            new_row[col] = row[col] * ratio
-        rows.append(new_row)
-
-df_pa_oa = pd.DataFrame(rows)
-df_pa_oa.reset_index(drop=True, inplace=True)
-df_pa_oa = df_pa_oa[
-    [
-        "OA21CD",
-        "Total2021_Production_AllCoreDBs",
-        "Total2021_Attraction_AllCoreDBs",
-        "Population_2021_AllCoreDBs",
-        "Workers_2021_AllCoreDBs",
-        "Households_2021_AllCoreDBs",
-        "Jobs_2021_AllCoreDBs",
-    ]
+df_pa_oa = df_pa[["OA21CD"]]
+df_cols = [
+    f"Total{year}_Production_AllCoreDBs",
+    f"Total{year}_Attraction_AllCoreDBs",
+    f"Population_{year}_AllCoreDBs",
+    # f"Workers_{year}_AllCoreDBs",
+    # f"Households_{year}_AllCoreDBs",
+    # f"Jobs_{year}_AllCoreDBs",
 ]
+for col in df_cols:
+    df_pa_oa[col] = df_pa[col] * df_pa["MSOA_POP_SHARE"] * df_pa["OA_POP_SHARE"]
+
+# %%
 # export disaggreagted PA at OA level
-df_pa_oa.to_parquet(base_dir / "simulation" / f"PA_{purpose}_OA_2021.pq")
+df_pa_oa.to_parquet(base_dir / "simulation" / f"PA_{purpose}_OA_{year}_GB.pq")
 
 # %%
 # attach maximum travel time for service within each OA
 df_pa_oa["LSOA11CD"] = df_pa_oa["OA21CD"].map(oa21cd_to_lsoa11cd)
-jts = pd.read_csv(base_dir / "simulation" / "jts_2019_lsoa_msoa.csv")
+jts = pd.read_csv(
+    base_dir / "simulation" / "jts_2019_lsoa_msoa.csv"
+)  # searching cutoff
 
 df_pa_oa = df_pa_oa.merge(
     jts[["LSOA11CD", f"{purpose}Cart"]], on="LSOA11CD", how="left"
@@ -146,8 +161,14 @@ median_cutoff = df_pa_oa[f"{purpose}Cart"].median()
 df_pa_oa.loc[df_pa_oa[f"{purpose}Cart"].isnull(), f"{purpose}Cart"] = median_cutoff
 
 # %%
-oa_shp = gpd.read_parquet(base_dir / "simulation" / "oa21_shp.gpq")
-oa_shp = oa_shp[oa_shp.OA21CD.str.startswith("E")].reset_index(drop=True)
+oa_shp = gpd.read_parquet(
+    dafni_dir
+    / "census_datasets"
+    / "admin_census_boundary_stats"
+    / "gb_oa_2021_estimates.geoparquet"
+)
+# oa_shp = gpd.read_parquet(base_dir / "simulation" / "oa21_shp.gpq")  # England and Wales
+# oa_shp = oa_shp[oa_shp.OA21CD.str.startswith("E")].reset_index(drop=True)
 zone_to_node_dict = find_nearest_node(oa_shp, nodes, "OA21CD", "node_id")
 
 # %%
@@ -157,16 +178,16 @@ df_pa_oa_node = (
     df_pa_oa.groupby("source")
     .agg(
         {
-            "Population_2021_AllCoreDBs": "sum",
-            "Total2021_Production_AllCoreDBs": "sum",
-            "Total2021_Attraction_AllCoreDBs": "sum",
+            f"Population_{year}_AllCoreDBs": "sum",
+            f"Total{year}_Production_AllCoreDBs": "sum",
+            f"Total{year}_Attraction_AllCoreDBs": "sum",
             f"{purpose}Cart": "max",
         }
     )
     .reset_index()
 )
 df_pa_oa_node = df_pa_oa_node[
-    df_pa_oa_node.Total2021_Production_AllCoreDBs > 0
+    df_pa_oa_node[f"Total{year}_Production_AllCoreDBs"] > 0
 ].reset_index(
     drop=True
 )  # 109_606
@@ -202,8 +223,8 @@ targets_and_times = pd.DataFrame(
 )
 # %%
 attraction_dict = (
-    df_pa_oa_node[df_pa_oa_node.Total2021_Attraction_AllCoreDBs > 0]
-    .set_index("source")["Population_2021_AllCoreDBs"]
+    df_pa_oa_node[df_pa_oa_node[f"Total{year}_Attraction_AllCoreDBs"] > 0]
+    .set_index("source")[f"Population_{year}_AllCoreDBs"]
     .to_dict()
 )
 targets_and_times["target_populations"] = targets_and_times["target_nodes"].apply(
@@ -219,4 +240,6 @@ df_pa_oa_node = df_pa_oa_node[df_pa_oa_node["target_counts"] > 0].reset_index(dr
 # around 30% of source nodes do not have reachable destinations nodes
 
 # %%
-df_pa_oa_node.to_parquet(base_dir / "simulation" / f"radiation_inputs_{purpose}.pq")
+df_pa_oa_node.to_parquet(
+    base_dir / "simulation" / f"radiation_inputs_{purpose}_{year}_GB.pq"
+)
