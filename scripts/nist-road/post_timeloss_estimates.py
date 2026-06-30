@@ -68,7 +68,7 @@ def main(future_year, future_scenario):
     # load model inputs
     with open(nist_path / "tables" / "node_to_lad24_updated.json", "rb") as f:
         node_to_lad = json.load(f)
-    lad = gpd.read_parquet(nist_path / "admins" / "lad24_shp.gpq")
+    # lad = gpd.read_parquet(nist_path / "admins" / "lad24_shp.gpq")
 
     # load computing results
     edge_flow = gpd.read_parquet(
