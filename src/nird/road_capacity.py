@@ -179,7 +179,7 @@ def compute_costs_for_links(
     Parameters
     ----------
     road_links: pd.DataFrame
-        DataFrame containing road link attributes, including 'time_hr' and 'length_mile'.
+        DataFrame containing road link attributes, including 'time_hr' and 'length_mile'
     vehicle_type: str
         Type of vehicle for cost calculation (e.g., 'car', 'lgv', 'ogv', 'psv', 'rail').
     cols_out: tuple of str
@@ -551,14 +551,18 @@ def update_network_structure(
     network: igraph.Graph,
     temp_edge_flow: pd.DataFrame,
     road_links: gpd.GeoDataFrame,
+    capacity_mode: bool = False,
 ) -> igraph.Graph:
-    """Drop fully utilised edges and Update edge weights.
+    """Update edge costs for saturated links or remove them when not in capacity mode.
 
     Parameters
     ----------
     network: igraph network
     temp_edge_flow: the remaining edge capacity at the current iteration
     road_links: road links
+    capacity_mode: bool
+        If True, keep saturated links in the network but assign them a very large
+        travel cost so they are avoided unless they are the only route option.
 
     Returns
     -------
@@ -569,19 +573,52 @@ def update_network_structure(
     logging.info(
         f"#road_links: {len(road_links)}, #valid_links: {len(road_links_valid)}"
     )
+    road_link_cap_cols = road_links_valid[
+        [
+            "e_id",
+            "e_idx",
+            "acc_capacity",
+            "current_capacity",
+        ]
+    ].rename(
+        columns={
+            "acc_capacity": "road_acc_capacity",
+            "current_capacity": "road_current_capacity",
+        }
+    )
     temp_edge_flow = temp_edge_flow.merge(
-        road_links_valid[["e_id", "e_idx", "acc_capacity", "current_capacity"]],
+        road_link_cap_cols,
         on="e_id",
         how="left",
     )
     temp_edge_flow["e_idx"] = temp_edge_flow["e_idx"].astype(int)
     # create mask
-    ratio = temp_edge_flow["acc_capacity"] / temp_edge_flow["current_capacity"].replace(
-        0, np.nan
-    )
+    ratio = temp_edge_flow["road_acc_capacity"] / temp_edge_flow[
+        "road_current_capacity"
+    ].replace(0, np.nan)
     # considered fully utilised if remaining capacity < 1 vehicle
     # or < 1% of original capacity
-    mask = (temp_edge_flow["acc_capacity"] < 1) | (ratio < 0.01)
+    mask = (temp_edge_flow["road_acc_capacity"] < 1) | (ratio < 0.01)
+
+    if capacity_mode:
+        penalised_edge_indices = [
+            int(idx)
+            for idx in temp_edge_flow.loc[mask, "e_idx"].tolist()
+            if pd.notna(idx)
+        ]
+        if penalised_edge_indices:
+            penalty_weight = 1e18
+            for edge_idx in penalised_edge_indices:
+                network.es[edge_idx]["weight"] = penalty_weight
+            logging.info(f"Penalised {len(penalised_edge_indices)} saturated edges")
+        num_of_edges_update = len(list(network.es))
+        if num_of_edges_update == num_of_edges:
+            logging.info("The network structure does not change!")
+            return network, road_links
+        logging.info(
+            f"The remaining number of edges in the network: {num_of_edges_update}"
+        )
+        return network, road_links
 
     # drop fully utilised edges from the network
     zero_capacity_edges = set(
@@ -747,7 +784,8 @@ def itter_path(
     conn=None,
     temp_flow_table: Optional[str] = None,
 ) -> None:
-    """Iteratively update the OD matrix and edge flows based on the current network structure."""
+    """Iteratively update the OD matrix and edge flows based on
+    the current network structure."""
 
     if temp_flow_table is None and temp_flow_matrix is None:
         raise ValueError("Either temp_flow_matrix or temp_flow_table must be provided.")
@@ -872,8 +910,8 @@ def itter_path(
 
         """
         Example:
-        origin | destination | flow | path_idx | path_ord | fuel | time | toll | length_mile
-        -------|-------------|------|----------|---------|------|------|------|-------------
+        origin | destination | flow | path_idx | path_ord | fuel | time | toll | length
+        -------|-------------|------|----------|---------|------|------|------|--------
         A      | B           | 100  | 1        | 1       | 10   | 0.5  | 2    | 5
         A      | B           | 100  | 5        | 2       | 20   | 1.0  | 0    | 3
         A      | B           | 100  | 9        | 3       | 15   | 0.8  | 1    | 4
@@ -969,7 +1007,8 @@ def itter_path(
         conn.execute("DROP TABLE IF EXISTS temp_flow_matrix_input_mem")
 
     logging.info(
-        f"Completed SQL path explosion and aggregation in DuckDB across {chunk_count} chunk(s)."
+        "Completed SQL path explosion and aggregation in DuckDB across "
+        f"{chunk_count} chunk(s)."
     )
 
     if apply_od_adjustment:
@@ -1107,7 +1146,7 @@ def network_flow_model(
     odpfc_out_path : str
         File path where the per-path flow/cost Parquet file will be written.
     vehicle_type : str, default ``"car"``
-        Vehicle type for cost calculations; one of ``["car", "lgv", "ogv", "psv", "rail"]``.
+        Vehicle type for cost calculations; one of ["car", "lgv", "ogv", "psv", "rail"].
     capacity_mode : bool, default ``False``
         If ``True``, residual OD demand at stop conditions is assigned as overflow on
         already-found paths (allowing over-capacity edges) where possible, instead of
@@ -1300,7 +1339,7 @@ def network_flow_model(
             )
             conn.register("temp_isolated_batch", iso_df)
             conn.execute(
-                "INSERT INTO temp_isolated_flow_matrix SELECT * FROM temp_isolated_batch"
+                "INSERT INTO temp_isolated_flow_matrix SELECT*FROM temp_isolated_batch"
             )
             conn.unregister("temp_isolated_batch")
             isolated_batch = []
@@ -1604,7 +1643,11 @@ def network_flow_model(
         # %%
         # update network structure (nodes and edges) for next iteration
         network, road_links = update_network_structure(
-            number_of_edges, network, temp_edge_flow, road_links
+            number_of_edges,
+            network,
+            temp_edge_flow,
+            road_links,
+            capacity_mode=capacity_mode,
         )
 
         del temp_edge_flow
