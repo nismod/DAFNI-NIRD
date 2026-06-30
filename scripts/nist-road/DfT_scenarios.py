@@ -13,7 +13,7 @@ try:
 except ImportError as exc:  # pragma: no cover
     raise SystemExit("pyodbc is required. Install it with: pip install pyodbc") from exc
 
-scenario = "Core"  # (Core)
+scenario = "High"  # !!! update: (Core, High)
 # -----------------------------
 # User settings
 # -----------------------------
@@ -27,7 +27,7 @@ Edu = (3, 13)
 Emp = (2, 12)
 Comm = (1, 11)
 # Identify group of purposes
-PURPOSES = Comm
+PURPOSES = Edu  #!!! update
 # Compute average daily across all selected time periods
 MODES = (3, 4)  # 3=Car Driver, 4=Car Passenger
 """TIME_PERIOD.
@@ -44,19 +44,10 @@ MODES = (3, 4)  # 3=Car Driver, 4=Car Passenger
 """
 TIME_PERIOD = tuple(range(1, 7))  # Compute average daily across all periods (1-6)
 TRIP_TYPES = (1, 2)  # 1=Production, 2=Attraction
-YEAR_COL = "2021"  # (2011, 2016, 2021, 2026, 2031, 2036, 2041, 2046, 2051, 2056, 2061)
+YEAR_COL = "2061"  #!!! update (2011, 2016, 2021, 2026, 2031, 2036, 2041, 2046, 2051, 2056, 2061)
 TABLE_NAME = "TripEndDataByDirection"
-
-OUTPUT_CSV = (
-    OUT_DIR / f"combined_{scenario.lower()}_scenario_zoneid_{YEAR_COL}_outflow.csv"
-)
-# OUTPUT_BY_DB_CSV = (
-#     OUT_DIR
-#     / f"combined_{scenario.lower()}_scenario_zoneid_{YEAR_COL}_outflow_by_db.csv"
-# )
-OUTPUT_SQLITE = (
-    OUT_DIR / f"combined_{scenario.lower()}_scenario_zoneid_{YEAR_COL}_outflow.sqlite"
-)
+# !!! update the outpath
+OUTPUT_CSV = OUT_DIR / "high" / f"{scenario.lower()}_education_{YEAR_COL}_outflow.csv"
 
 
 def access_connection(db_path: Path) -> pyodbc.Connection:
@@ -251,17 +242,12 @@ def main() -> None:
     ].sort_values("ZoneID")
     summary.to_csv(OUTPUT_CSV, index=False)
 
-    # Also save both outputs into a SQLite database as actual tables.
-    # with sqlite3.connect(OUTPUT_SQLITE) as conn:
-    #     combined_by_db.to_sql("combined_by_db", conn, if_exists="replace", index=False)
-    #     summary.to_sql("summary_by_zone", conn, if_exists="replace", index=False)
-
     print()
-    # print(f"Wrote detailed by-database table: {OUTPUT_BY_DB_CSV}")
     print(f"Wrote combined summary table:      {OUTPUT_CSV}")
-    print(f"Wrote SQLite tables:               {OUTPUT_SQLITE}")
     print(f"Summary rows: {len(summary)}")
 
 
 if __name__ == "__main__":
     main()
+
+# %%
