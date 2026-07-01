@@ -18,7 +18,7 @@ nist_path = Path(load_config()["paths"]["NIST"])
 
 
 def main(
-    od, # od_agg/od_agg_gt1
+    od,  # od_agg/od_agg_2050
     num_of_chunk: int,
     num_of_cpu: int,
     sample_stride=1,
@@ -46,13 +46,11 @@ def main(
         urban_speed_dict = json.load(f)
 
     # network links (England only)
-    road_link_file = gpd.read_parquet(
-        nist_path / "networks" / "road_edges_gb.gpq" #"England_road_links_with_bridges.gpq"
-    )
+    road_link_file = gpd.read_parquet(nist_path / "networks" / "road_edges_gb.gpq")
 
     # od matrix (2021, 2030, 2050)
-    od_node = pd.read_parquet(nist_path / "od" / f"{od}.pq") # od_agg.pq or od_agg_2050.pq
-    od_node["Car21"] = od_node[f"Car21"] * 2
+    od_node = pd.read_parquet(nist_path / "od" / f"{od}.pq")
+    od_node["Car21"] = od_node["Car21"] * 2
     logging.info(f"\n{od_node}")
     logging.info(f"total flows: {od_node.Car21.sum()}")
 
