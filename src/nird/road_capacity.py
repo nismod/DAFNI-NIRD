@@ -546,6 +546,20 @@ def create_igraph_network(
     return network, road_links
 
 
+def _update_remaining_capacity(
+    current_capacity: np.ndarray | pd.Series,
+    assigned_flow: np.ndarray | pd.Series,
+    allow_over_capacity: bool = False,
+) -> np.ndarray:
+    """Update remaining edge capacity without letting earlier rounds go negative."""
+    current_capacity_array = np.asarray(current_capacity, dtype=float)
+    assigned_flow_array = np.asarray(assigned_flow, dtype=float)
+    updated_capacity = current_capacity_array - assigned_flow_array
+    if not allow_over_capacity:
+        updated_capacity = np.maximum(updated_capacity, 0.0)
+    return updated_capacity
+
+
 def update_network_structure(
     num_of_edges: int,  # initial network
     network: igraph.Graph,
@@ -1550,7 +1564,11 @@ def network_flow_model(
         )
         road_links["flow"] = road_links["flow"].fillna(0.0)
         road_links["acc_flow"] += road_links["flow"]
-        road_links["acc_capacity"] = road_links["acc_capacity"] - road_links["flow"]
+        road_links["acc_capacity"] = _update_remaining_capacity(
+            road_links["acc_capacity"],
+            road_links["flow"],
+            allow_over_capacity=not (capacity_mode and iter_flag >= max_iterations),
+        )
 
         # Recalculate edge speeds for edges that changed (vectorized if possible)
         logging.info("Updating edge speeds: ")
