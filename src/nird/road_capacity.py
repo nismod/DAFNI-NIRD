@@ -704,17 +704,17 @@ def update_od_matrix(
     Parameters
     ----------
     temp_flow_matrix : pd.DataFrame
-        DataFrame with columns ``origin``, ``destination``, ``path`` (list of edge ids),
-        and ``flow`` representing per-OD assignments prior to capacity checks.
+        DataFrame with columns "origin", "destination", "path" (list of edge ids),
+        and "flow" representing per-OD assignments prior to capacity checks.
 
     Returns
     -------
     pd.DataFrame
         Filtered copy containing only rows with a non-empty path.
     pd.DataFrame
-        Rows whose ``path`` lists are empty (no feasible route found).
+        Rows whose "path" lists are empty (no feasible route found).
     float
-        Total isolated flow (sum of the ``flow`` values with empty paths).
+        Total isolated flow (sum of the "flow" values with empty paths).
     """
 
     mask = temp_flow_matrix["path"].apply(lambda x: len(x) == 0)
@@ -740,7 +740,7 @@ def find_least_cost_path(
     Parameters
     ----------
     params : Tuple
-        Tuple of ``(origin_node, destination_nodes, flows)`` where the first entry is
+        Tuple of "(origin_node, destination_nodes, flows)" where the first entry is
         the origin vertex id (string), the second is a list of destination ids, and the
         third is the corresponding list of OD flows.
 
@@ -775,12 +775,12 @@ def worker_init_path(
     Parameters
     ----------
     shared_network_pkl : bytes
-        Pickled bytes of the igraph ``Graph`` to be shared across worker processes.
+        Pickled bytes of the igraph "Graph" to be shared across worker processes.
 
     Returns
     -------
     None
-        The function sets the module-level ``shared_network`` variable in-place.
+        The function sets the module-level "shared_network" variable in-place.
     """
     global shared_network
     shared_network = pickle.loads(shared_network_pkl)
@@ -1146,23 +1146,24 @@ def network_flow_model(
     network : igraph.Graph
         Directed network used for least-cost path searches.
     remain_od : pd.DataFrame
-        Input OD matrix with columns ``origin_node``, ``destination_node``, ``Car21``.
+        Input OD matrix with columns "origin_node", "destination_node", "Car21".
     flow_breakpoint_dict : Dict[str, float]
         Dictionary mapping combined labels to breakpoint flows for speed updates.
     num_of_chunk : int
         Number of chunks to split per-iteration path results when exploding paths.
     num_of_cpu : int
         Number of worker processes used for path finding (>=1).
-    db_path : str, default ``"results.duckdb"``
+    db_path : str, default "results.duckdb"
         Location of the DuckDB database for temporaries and final tables.
     iso_out_path : str
         File path where the final isolated OD Parquet file will be written.
     odpfc_out_path : str
         File path where the per-path flow/cost Parquet file will be written.
-    vehicle_type : str, default ``"car"``
+    vehicle_type : str, default "car"
         Vehicle type for cost calculations; one of ["car", "lgv", "ogv", "psv", "rail"].
-    capacity_mode : bool, default ``False``
-        If ``True``, residual OD demand at stop conditions is assigned as overflow on
+    capacity_mode : bool, default "False"
+        If "True", fully-utilized edges will be panelised instead of removing from the
+        network. OD demand at stop conditions is assigned as overflow on
         already-found paths (allowing over-capacity edges) where possible, instead of
         being fully moved to isolation.
 
@@ -1171,7 +1172,7 @@ def network_flow_model(
     gpd.GeoDataFrame
         Road links with updated accumulated flow, capacity, and speed attributes.
     List[float]
-        Aggregate costs in the order ``[cost_time, cost_fuel, cost_toll, total_cost]``.
+        Aggregate costs in the order ["cost_time", "cost_fuel", "cost_toll", "total_cost"].
     """
 
     road_links_columns = road_links.columns.tolist()
