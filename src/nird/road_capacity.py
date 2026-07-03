@@ -1567,7 +1567,7 @@ def network_flow_model(
         road_links["acc_capacity"] = _update_remaining_capacity(
             road_links["acc_capacity"],
             road_links["flow"],
-            allow_over_capacity=not (capacity_mode and iter_flag >= max_iterations),
+            allow_over_capacity=(capacity_mode and iter_flag >= max_iterations),
         )
 
         # Recalculate edge speeds for edges that changed (vectorized if possible)
