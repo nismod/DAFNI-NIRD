@@ -1,4 +1,5 @@
 # %%
+import sys
 from pathlib import Path
 from nird.utils import load_config
 import pyarrow as pa
