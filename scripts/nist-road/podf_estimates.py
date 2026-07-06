@@ -33,7 +33,13 @@ def main(od: str, batch_size: int = 100_000):
         df = batch.to_pandas()
         # Drop rows without a path
         df = df.dropna(subset=["path"]).copy()
-
+        # Convert string to list
+        df["path"] = (
+            df["path"]
+            .str.strip("[]")
+            .str.split(",")
+            .apply(lambda x: [s.strip() for s in x])
+        )
         # Explode the path column so each edge becomes one row
         df = df.explode("path", ignore_index=True)
 
