@@ -14,19 +14,25 @@ out_path = nist_path.parent / "outputs"
 
 
 # %%
-def load_data(od_file, dict_file):
+def load_and_process_batches(od_file, dict_file, cols=None, batch_size=200_000):
+    """Generator: read parquet batches, process shares and path, yield aggregated Series per batch."""
     with open(table_path / f"{dict_file}.pkl", "rb") as f:
         od_meta = pickle.load(f)
     pf = pq.ParquetFile(out_path / f"{od_file}.pq")
-    return pf, od_meta
+    if cols is None:
+        cols = ["origin_node", "destination_node", "path", "flow"]
 
+    def _get_shares(o, d):
+        v = od_meta.get((o, d))
+        if v is None:
+            ks1 = f"{o}|{d}"
+            ks2 = f"{o},{d}"
+            v = od_meta.get(ks1) or od_meta.get(ks2) or {}
+        if not isinstance(v, dict):
+            return {}
+        return v
 
-def main(od_file, dict_file):
-    pf, od_meta = load_data(od_file, dict_file)
-
-    totals = defaultdict(float)
-    cols = ["origin_node", "destination_node", "path", "flow"]
-    for batch in pf.iter_batches(columns=cols, batch_size=200_000):
+    for batch in pf.iter_batches(columns=cols, batch_size=batch_size):
         df = batch.to_pandas()
 
         # Convert string representation to list of edge IDs
@@ -35,43 +41,36 @@ def main(od_file, dict_file):
             .fillna("[]")
             .str.strip("[]")
             .str.split(",")
-            .apply(lambda x: [s.strip() for s in x if s.strip()])
+            .apply(lambda x: [s.strip() for s in x if s and str(s).strip()])
         )
 
         # One row per edge
         df = df.explode("path", ignore_index=True)
         df = df[df["path"].notna()]
 
-        # Attach shares dict for each OD, then expand into (purpose, share) rows
-        def _get_shares(o, d):
-            # try tuple key, then 'o|d' and 'o,d'
-            v = od_meta.get((o, d))
-            if v is None:
-                ks1 = f"{o}|{d}"
-                ks2 = f"{o},{d}"
-                v = od_meta.get(ks1) or od_meta.get(ks2) or {}
-            if not isinstance(v, dict):
-                return {}
-            return v
-
+        # Attach and expand shares
         df["_shares"] = [
             list(_get_shares(o, d).items()) or [("unknown", 1.0)]
             for o, d in zip(df["origin_node"], df["destination_node"])
         ]
-
         df = df.explode("_shares", ignore_index=True)
         df[["purpose", "share"]] = pd.DataFrame(df["_shares"].tolist(), index=df.index)
-        # normalize shares (if percentages given as >1, assume percent and divide by 100)
         df["share"] = df["share"].astype(float)
         df.loc[df["share"] > 1, "share"] = df.loc[df["share"] > 1, "share"] / 100.0
 
         # split flows by share
         df["flow"] = df["flow"].astype(float) * df["share"]
 
-        # Aggregate within batch
+        # Aggregate within batch and yield
         batch_agg = df.groupby(["path", "purpose"])["flow"].sum()
+        yield batch_agg
 
-        # Accumulate
+
+def main(od_file, dict_file, batch_size=200_000):
+    totals = defaultdict(float)
+    for batch_agg in load_and_process_batches(
+        od_file, dict_file, batch_size=batch_size
+    ):
         for key, value in batch_agg.items():
             totals[key] += float(value)
 
@@ -100,6 +99,9 @@ if __name__ == "__main__":
         "od_file", help="Input OD parquet basename (without extension .pq)"
     )
     parser.add_argument("dict_file", help="Shares pickle basename (without .pkl)")
+    parser.add_argument(
+        "--batch-size", type=int, default=200_000, help="Rows per parquet batch"
+    )
     args = parser.parse_args()
 
-    main(args.od_file, args.dict_file)
+    main(args.od_file, args.dict_file, args.batch_size)
