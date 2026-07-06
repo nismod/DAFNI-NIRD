@@ -7,6 +7,15 @@ from nird.utils import load_config
 import pickle
 import argparse
 import logging
+import math
+
+try:
+    from tqdm import tqdm
+except Exception:
+
+    def tqdm(x, **kwargs):
+        return x
+
 
 nist_path = Path(load_config()["paths"]["NIST"])  # path to NIST folder
 table_path = nist_path / "tables"
@@ -66,11 +75,24 @@ def load_and_process_batches(od_file, dict_file, cols=None, batch_size=200_000):
         yield batch_agg
 
 
+def get_total_rows(od_file):
+    p = out_path / f"{od_file}.pq"
+    pf = pq.ParquetFile(p)
+    return pf.metadata.num_rows
+
+
 def main(od_file, dict_file, batch_size=200_000):
     totals = defaultdict(float)
-    for batch_agg in load_and_process_batches(
-        od_file, dict_file, batch_size=batch_size
-    ):
+    try:
+        total_rows = get_total_rows(od_file)
+        total_batches = (
+            math.ceil(total_rows / batch_size) if total_rows and batch_size else None
+        )
+    except Exception:
+        total_batches = None
+
+    iterator = load_and_process_batches(od_file, dict_file, batch_size=batch_size)
+    for batch_agg in tqdm(iterator, total=total_batches, desc="Batches", unit="batch"):
         for key, value in batch_agg.items():
             totals[key] += float(value)
 
@@ -82,6 +104,12 @@ def main(od_file, dict_file, batch_size=200_000):
         )
         .sort_values(["edge", "purpose"])
         .reset_index(drop=True)
+    )
+    edge_purpose_flow = edge_purpose_flow.groupby(["edge", "purpose"], as_index=False)[
+        "flow"
+    ].sum()
+    edge_purpose_flow = edge_purpose_flow[edge_purpose_flow["flow"] > 0].reset_index(
+        drop=True
     )
     edge_purpose_flow.to_parquet(
         out_path / f"{od_file}_edge_purpose_flow.pq", index=False
