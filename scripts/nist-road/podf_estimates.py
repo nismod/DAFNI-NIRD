@@ -1,5 +1,7 @@
 # %%
 import sys
+import pandas as pd
+
 from pathlib import Path
 from nird.utils import load_config
 import pyarrow as pa
@@ -9,12 +11,18 @@ import logging
 import warnings
 
 warnings.simplefilter("ignore")
-nist_path = Path(load_config()["paths"]["NIST"])
-out_path = nist_path.parent / "outputs"
+pd.set_option("display.max_columns", None)
 
 
-# %%
+def get_paths():
+    cfg = load_config()
+    nist_path = Path(cfg["paths"]["NIST"])  # path to NIST folder
+    out_path = nist_path.parent / "outputs"
+    return nist_path, out_path
+
+
 def load_odpfc(od: str):
+    _, out_path = get_paths()
     odpfc_out_path = out_path / f"odpfc_{od}.pq"  # od_agg / od_agg_2050
     if not odpfc_out_path.exists():
         raise FileNotFoundError(f"{odpfc_out_path} does not exist.")
@@ -33,6 +41,7 @@ def main(od: str, batch_size: int = 100_000):
         df = batch.to_pandas()
         # Drop rows without a path
         df = df.dropna(subset=["path"]).copy()
+        logging.info("od", df.loc[0, "path"][0])
         # Convert string to list
         df["path"] = (
             df["path"]
@@ -40,34 +49,23 @@ def main(od: str, batch_size: int = 100_000):
             .str.split(",")
             .apply(lambda x: [s.strip() for s in x])
         )
+        logging.info("od", df.loc[0, "path"][0])
         # Explode the path column so each edge becomes one row
-        df = df.explode("path", ignore_index=True)
-
-        def parse_edge(edge):
-            if isinstance(edge, (tuple, list)) and len(edge) == 2:
-                return edge[0], edge[1]
-            if isinstance(edge, str) and "->" in edge:
-                u, v = edge.split("->", 1)
-                return u.strip(), v.strip()
-            raise ValueError(f"Unsupported edge format: {edge!r}")
-
-        edge_nodes = df["path"].apply(parse_edge)
-        df["edge_origin"] = edge_nodes.apply(lambda x: x[0])
-        df["edge_destination"] = edge_nodes.apply(lambda x: x[1])
-
-        out_df = df[
-            [
-                "origin_node",
-                "destination_node",
-                "edge_origin",
-                "edge_destination",
-                "flow",
+        out_df = (
+            df.explode("path", ignore_index=True)
+            .groupby(["path", "origin_node", "destination_node"], as_index=False)[
+                "flow"
             ]
-        ].copy()
-
+            .sum()
+            .reset_index(drop=True)
+        )
+        logging.info("gp", out_df.head(5))
         table = pa.Table.from_pandas(out_df, preserve_index=False)
 
         if writer is None:
+            # ensure output directory exists
+            _, out_path = get_paths()
+            out_path.mkdir(parents=True, exist_ok=True)
             writer = pq.ParquetWriter(
                 out_path / f"odpfc_{od}_expanded.parquet", table.schema
             )
