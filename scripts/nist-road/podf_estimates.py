@@ -1,5 +1,4 @@
 # %%
-import sys
 import pandas as pd
 
 from pathlib import Path
@@ -9,12 +8,17 @@ import pyarrow.parquet as pq
 import pyarrow.dataset as ds
 import logging
 import warnings
-import shutil
-import zlib
 from typing import Optional
+import argparse
+import pickle
 
 warnings.simplefilter("ignore")
 pd.set_option("display.max_columns", None)
+
+nist_path = Path(load_config()["paths"]["NIST"])  # path to NIST folder
+table_path = nist_path / "tables"
+out_path = nist_path.parent / "outputs"
+
 try:
     from tqdm import tqdm
 except Exception:
@@ -23,22 +27,43 @@ except Exception:
         return x
 
 
-def get_paths():
-    cfg = load_config()
-    nist_path = Path(cfg["paths"]["NIST"])  # path to NIST folder
-    out_path = nist_path.parent / "outputs"
-    return nist_path, out_path
+def load_shares(shares_file):
+    p = table_path / shares_file
+    if not p.exists():
+        raise FileNotFoundError(p)
+    obj = pickle.load(open(p, "rb"))
+    if not isinstance(obj, dict):
+        raise ValueError("shares pickle must contain a dict-like mapping")
+    rows = []
+    for k, v in obj.items():
+        if isinstance(k, (list, tuple)):
+            a, b = k[0], k[1]
+        else:
+            ks = str(k)
+            if "|" in ks:
+                a, b = [x.strip() for x in ks.split("|", 1)]
+            elif "," in ks:
+                a, b = [x.strip() for x in ks.split(",", 1)]
+            else:
+                raise ValueError(f"Unrecognized key in shares mapping: {k}")
+        row = {"origin_node": a, "destination_node": b}
+        row.update(v)
+        rows.append(row)
+    return pd.DataFrame(rows)
 
 
 def load_odpfc(od: str):
-    _, out_path = get_paths()
-    odpfc_out_path = out_path / f"odpfc_{od}.pq"  # od_agg / od_agg_2050
-    if not odpfc_out_path.exists():
-        raise FileNotFoundError(f"{odpfc_out_path} does not exist.")
-    return ds.dataset(odpfc_out_path, format="parquet")
+    p = out_path / f"odpfc_{od}.pq"
+    if not p.exists():
+        raise FileNotFoundError(p)
+    return ds.dataset(p, format="parquet")
 
 
-def main(od: str, batch_size: int = 100_000, n_shards: int = 1024):
+def main(
+    od: str,
+    batch_size: int = 100_000,
+    shares_file: Optional[str] = None,
+):
     dataset = load_odpfc(od)
     scanner = dataset.scanner(
         columns=["origin_node", "destination_node", "path", "flow"],
@@ -47,14 +72,22 @@ def main(od: str, batch_size: int = 100_000, n_shards: int = 1024):
 
     from collections import defaultdict
 
-    # Prepare temporary shard directory
-    _, out_path = get_paths()
-    shard_dir = out_path / f"odpfc_{od}_shards"
-    if shard_dir.exists():
-        shutil.rmtree(shard_dir)
-    shard_dir.mkdir(parents=True, exist_ok=True)
+    # Load shares dict file (user-specified filename under table_path)
+    if shares_file is None:
+        raise ValueError("A shares file must be provided (filename under table_path).")
+
+    shares_df = load_shares(shares_file)
+
+    # Prepare output path and in-memory accumulator for (path, purpose) -> flow
+    acc = defaultdict(float)
 
     # During scanning: write per-batch aggregated rows into shard CSVs to avoid holding everything in memory
+    purposes = [
+        c for c in shares_df.columns if c not in ("origin_node", "destination_node")
+    ]
+    if not purposes:
+        raise ValueError("No purpose columns found in shares file")
+
     for batch in tqdm(scanner.to_batches(), desc="Scanning batches", unit="batch"):
         df = batch.to_pandas()
         # Drop rows without a path
@@ -78,81 +111,55 @@ def main(od: str, batch_size: int = 100_000, n_shards: int = 1024):
             .sum()
         )
 
-        if out_df.empty:
+        # Merge with shares DataFrame to broadcast purpose shares for each OD
+        merged = out_df.merge(
+            shares_df, on=["origin_node", "destination_node"], how="left"
+        )
+        # drop rows without shares
+        merged = merged.dropna(subset=purposes, how="all")
+        if merged.empty:
             continue
 
-        # assign each row to a shard using crc32 on the key string
-        keys = (
-            out_df["path"].astype(str)
-            + "|"
-            + out_df["origin_node"].astype(str)
-            + "|"
-            + out_df["destination_node"].astype(str)
+        # compute purpose-specific flows: multiply flow by each purpose share
+        for p in purposes:
+            merged[p] = merged[p].fillna(0).astype(float)
+            merged[p + "_flow"] = merged["flow"] * merged[p]
+
+        # melt purpose flows into long format
+        flow_cols = [p + "_flow" for p in purposes]
+        melted = merged.melt(
+            id_vars=["path", "origin_node", "destination_node"],
+            value_vars=flow_cols,
+            var_name="purpose",
+            value_name="flow",
         )
-        shards = keys.apply(lambda s: zlib.crc32(s.encode("utf-8")) % n_shards)
-        out_df["_shard"] = shards
+        # normalize purpose names (remove _flow suffix)
+        melted["purpose"] = melted["purpose"].str.replace("_flow", "", regex=False)
+        # drop zero or missing flows
+        melted = melted[melted["flow"] > 0]
 
-        # write each shard group to its CSV file (append)
-        for sid, group in tqdm(
-            out_df.groupby("_shard"), desc="Writing shards", leave=False
-        ):
-            file_path = shard_dir / f"shard_{sid}.csv"
-            write_header = not file_path.exists()
-            group.loc[:, ["path", "origin_node", "destination_node", "flow"]].to_csv(
-                file_path, mode="a", header=write_header, index=False
-            )
+        if melted.empty:
+            continue
 
-    # Now aggregate each shard independently and write to a single parquet file incrementally
-    writer: Optional[pq.ParquetWriter] = None
-    out_file = out_path / f"odpfc_{od}_expanded.parquet"
+        # Accumulate per-batch purpose flows into the global accumulator
+        for r in melted.itertuples(index=False):
+            acc[(r.path, r.purpose)] += float(r.flow)
 
-    shard_files = sorted(
-        [p for p in shard_dir.iterdir() if p.name.startswith("shard_")]
-    )
-    if not shard_files:
+    # Build final DataFrame aggregated across all batches (path, purpose, flow)
+    if len(acc) == 0:
         logging.info("No data to write for od=%s", od)
         return
 
-    for shard_file in tqdm(shard_files, desc="Processing shards", unit="shard"):
-        acc_shard = defaultdict(float)
-        # read shard in chunks to avoid memory spikes
-        for chunk in tqdm(
-            pd.read_csv(shard_file, chunksize=100_000),
-            desc=f"Reading {shard_file.name}",
-            unit="chunk",
-            leave=False,
-        ):
-            grp = chunk.groupby(
-                ["path", "origin_node", "destination_node"], as_index=False
-            )["flow"].sum()
-            for r in grp.itertuples(index=False):
-                acc_shard[(r.path, r.origin_node, r.destination_node)] += r.flow
+    final_df = pd.DataFrame(
+        [(k[0], k[1], v) for k, v in acc.items()], columns=["path", "purpose", "flow"]
+    )
+    final_df = final_df.sort_values(by=["path", "purpose"]).reset_index(drop=True)
 
-        if not acc_shard:
-            continue
-
-        shard_df = pd.DataFrame(
-            [(k[0], k[1], k[2], v) for k, v in acc_shard.items()],
-            columns=["path", "origin_node", "destination_node", "flow"],
-        )
-        shard_df = shard_df.sort_values(
-            by=["path", "origin_node", "destination_node"]
-        ).reset_index(drop=True)
-
-        table = pa.Table.from_pandas(shard_df, preserve_index=False)
-        if writer is None:
-            out_path.mkdir(parents=True, exist_ok=True)
-            writer = pq.ParquetWriter(out_file, table.schema)
-        writer.write_table(table)
-
-    if writer is not None:
-        writer.close()
-
-    # cleanup shards
-    try:
-        shutil.rmtree(shard_dir)
-    except Exception:
-        logging.warning("Could not remove temporary shard directory %s", shard_dir)
+    # ensure output directory exists and write single parquet file
+    out_file = out_path / f"odpfc_{od}_expanded.parquet"
+    out_path.mkdir(parents=True, exist_ok=True)
+    table = pa.Table.from_pandas(final_df, preserve_index=False)
+    pq.write_table(table, out_file)
 
 
 if __name__ == "__main__":
@@ -160,7 +167,18 @@ if __name__ == "__main__":
         format="%(asctime)s %(process)d %(filename)s %(message)s", level=logging.INFO
     )
     try:
-        od = sys.argv[1]
-        main(od)
+        parser = argparse.ArgumentParser()
+        parser.add_argument("od", help="OD dataset identifier (filename suffix)")
+        parser.add_argument(
+            "shares_file",
+            help="Shares file name located under tables/ (json/csv/parquet)",
+        )
+        parser.add_argument("--batch-size", type=int, default=100_000)
+        args = parser.parse_args()
+        main(
+            args.od,
+            batch_size=args.batch_size,
+            shares_file=args.shares_file,
+        )
     except (IndexError, NameError):
         logging.info("Provide input parameters!")
