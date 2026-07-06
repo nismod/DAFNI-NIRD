@@ -15,6 +15,12 @@ from typing import Optional
 
 warnings.simplefilter("ignore")
 pd.set_option("display.max_columns", None)
+try:
+    from tqdm import tqdm
+except Exception:
+
+    def tqdm(x, **kwargs):
+        return x
 
 
 def get_paths():
@@ -49,7 +55,7 @@ def main(od: str, batch_size: int = 100_000, n_shards: int = 1024):
     shard_dir.mkdir(parents=True, exist_ok=True)
 
     # During scanning: write per-batch aggregated rows into shard CSVs to avoid holding everything in memory
-    for batch in scanner.to_batches():
+    for batch in tqdm(scanner.to_batches(), desc="Scanning batches", unit="batch"):
         df = batch.to_pandas()
         # Drop rows without a path
         df = df.dropna(subset=["path"]).copy()
@@ -87,7 +93,9 @@ def main(od: str, batch_size: int = 100_000, n_shards: int = 1024):
         out_df["_shard"] = shards
 
         # write each shard group to its CSV file (append)
-        for sid, group in out_df.groupby("_shard"):
+        for sid, group in tqdm(
+            out_df.groupby("_shard"), desc="Writing shards", leave=False
+        ):
             file_path = shard_dir / f"shard_{sid}.csv"
             write_header = not file_path.exists()
             group.loc[:, ["path", "origin_node", "destination_node", "flow"]].to_csv(
@@ -105,10 +113,15 @@ def main(od: str, batch_size: int = 100_000, n_shards: int = 1024):
         logging.info("No data to write for od=%s", od)
         return
 
-    for shard_file in shard_files:
+    for shard_file in tqdm(shard_files, desc="Processing shards", unit="shard"):
         acc_shard = defaultdict(float)
         # read shard in chunks to avoid memory spikes
-        for chunk in pd.read_csv(shard_file, chunksize=100_000):
+        for chunk in tqdm(
+            pd.read_csv(shard_file, chunksize=100_000),
+            desc=f"Reading {shard_file.name}",
+            unit="chunk",
+            leave=False,
+        ):
             grp = chunk.groupby(
                 ["path", "origin_node", "destination_node"], as_index=False
             )["flow"].sum()
