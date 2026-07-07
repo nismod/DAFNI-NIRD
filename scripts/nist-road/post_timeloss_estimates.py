@@ -64,7 +64,7 @@ def process_chunk(chunk, edge_flow):
     return agg
 
 
-def main(future_year, future_scenario):
+def main(future_scenario):
     # load model inputs
     with open(nist_path / "tables" / "node_to_lad24_updated.json", "rb") as f:
         node_to_lad = json.load(f)
@@ -72,15 +72,10 @@ def main(future_year, future_scenario):
 
     # load computing results
     edge_flow = gpd.read_parquet(
-        nist_path.parent / "outputs" / f"edge_flow_{future_year}_{future_scenario}.gpq"
+        nist_path.parent / "outputs" / f"edge_flow_{future_scenario}.gpq"
     )
     edge_flow = calculate_time(edge_flow)
-    od = pd.read_parquet(
-        nist_path.parent / "outputs" / f"odpfc_{future_year}_{future_scenario}.pq"
-    )
-    # test = od.drop(columns = ["path"])
-    # test.to_parquet(nist_path.parent / "outputs" / f"odfc_{future_year}_{future_scenario}.pq")
-    # sys.exit(0)
+    od = pd.read_parquet(nist_path.parent / "outputs" / f"odpfc_{future_scenario}.pq")
 
     # chunked process
     chunksize = 100_000
@@ -119,13 +114,11 @@ def main(future_year, future_scenario):
     )
     merged = lad.merge(agg, on="LAD24CD", how="left")
     merged.to_parquet(
-        nist_path.parent / "outputs" / f"lad24_time_{future_year}_{future_scenario}.gpq"
+        nist_path.parent / "outputs" / f"lad24_time_{future_scenario}.gpq"
     )
     """
     od.drop(columns=["path", "orig_index"], inplace=True)
-    od.to_parquet(
-        nist_path.parent / "outputs" / f"od_time_{future_year}_{future_scenario}.pq"
-    )
+    od.to_parquet(nist_path.parent / "outputs" / f"od_time_{future_scenario}.pq")
 
 
 if __name__ == "__main__":
@@ -133,7 +126,7 @@ if __name__ == "__main__":
         format="%(asctime)s %(process)d %(filename)s %(message)s", level=logging.INFO
     )
     try:
-        future_year, future_scenario = sys.argv[1:]
-        main(int(future_year), future_scenario)
+        future_scenario = sys.argv[1]
+        main(future_scenario)
     except (IndexError, NameError):
         logging.info("Provide input parameters!")
