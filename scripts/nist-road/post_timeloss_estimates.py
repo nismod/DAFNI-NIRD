@@ -12,6 +12,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 from nird.utils import load_config
+import math
 
 warnings.simplefilter("ignore")
 nist_path = Path(load_config()["paths"]["NIST"])
@@ -71,6 +72,12 @@ def process_batch(batch, edge_flow, node_to_lad):
     return result.drop(columns=["path", "__od_idx"])
 
 
+def get_total_rows(future_scenario):
+    p = nist_path / "outputs" / f"odpfc_{future_scenario}.pq"
+    pf = pq.ParquetFile(p)
+    return pf.metadata.num_rows
+
+
 def main(future_scenario):
     # load model inputs
     with open(nist_path / "tables" / "node_to_lad24_updated.json", "rb") as f:
@@ -90,11 +97,22 @@ def main(future_scenario):
 
     chunksize = 100_000
     parquet_file = pq.ParquetFile(input_path)
-    writer = None
 
+    # get total rows and batches for progress bar
+    try:
+        total_rows = get_total_rows(future_scenario)
+        total_batches = (
+            math.ceil(total_rows / chunksize) if total_rows and chunksize else None
+        )
+    except Exception:
+        total_batches = None
+
+    # process batches and write to output
+    writer = None
     try:
         for batch in tqdm(
             parquet_file.iter_batches(batch_size=chunksize),
+            total=total_batches,
             desc="Processing batches",
             unit="batch",
         ):
