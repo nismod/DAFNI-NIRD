@@ -295,10 +295,8 @@ def compute_costs_for_links(
         return pd.concat(pieces, axis=0).sort_index()
 
 
-def edge_reclassification_func(
-    road_links: pd.DataFrame,
-) -> pd.DataFrame:
-    """Reclassify network edges to "M, A_dual, A_single, B"."""
+def edge_reclassification_func(road_links: pd.DataFrame) -> pd.DataFrame:
+    """Reclassify network edges to M, A_dual, A_single, B."""
     assert (
         "road_classification" in road_links.columns
     ), "road_classification is missing to call edge_reclassification_func!"
@@ -306,20 +304,30 @@ def edge_reclassification_func(
         "form_of_way" in road_links.columns
     ), "form_of_way is missing to call edge_reclassification_func!"
 
-    primary = ["trunk", "a class", "a road" "primary"]
+    primary = ["trunk", "a class", "a road", "primary"]
     secondary = ["b class", "b road", "secondary"]
+
+    road_links = road_links.copy()
     road_links["combined_label"] = "A_dual"
+
     road_links.loc[
-        road_links.road_classification.str.lower().str == "motorway", "combined_label"
+        road_links["road_classification"].str.lower().eq("motorway"),
+        "combined_label",
     ] = "M"
+
     road_links.loc[
-        road_links.road_classification.str.lower().str.isin(secondary), "combined_label"
+        road_links["road_classification"].str.lower().isin(secondary),
+        "combined_label",
     ] = "B"
+
     road_links.loc[
-        (road_links.road_classification.str.lower().str.isin(primary))
+        (road_links["road_classification"].fillna("").str.lower().isin(primary))
         & (
-            road_links.form_of_way.str.lower().str.contains("single", na=False)
-        ),  # single carriageways
+            road_links["form_of_way"]
+            .fillna("")
+            .str.lower()
+            .str.contains("single", na=False)
+        ),
         "combined_label",
     ] = "A_single"
 
