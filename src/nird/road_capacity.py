@@ -165,7 +165,6 @@ def find_nearest_node(
     return nearest_node_dict  # zone_idx: node_idx
 
 
-# %%
 def compute_costs_for_links(
     road_links: pd.DataFrame,
     vehicle_type: str = "car",
@@ -300,14 +299,30 @@ def edge_reclassification_func(
     road_links: pd.DataFrame,
 ) -> pd.DataFrame:
     """Reclassify network edges to "M, A_dual, A_single, B"."""
+    assert (
+        "road_classification" in road_links.columns
+    ), "road_classification is missing to call edge_reclassification_func!"
+    assert (
+        "form_of_way" in road_links.columns
+    ), "form_of_way is missing to call edge_reclassification_func!"
+
+    primary = ["trunk", "a class", "a road" "primary"]
+    secondary = ["b class", "b road", "secondary"]
     road_links["combined_label"] = "A_dual"
-    road_links.loc[road_links.road_classification == "Motorway", "combined_label"] = "M"
-    road_links.loc[road_links.road_classification == "B Road", "combined_label"] = "B"
     road_links.loc[
-        (road_links.road_classification == "A Road")
-        & (road_links.form_of_way == "Single Carriageway"),
+        road_links.road_classification.str.lower().str == "motorway", "combined_label"
+    ] = "M"
+    road_links.loc[
+        road_links.road_classification.str.lower().str.isin(secondary), "combined_label"
+    ] = "B"
+    road_links.loc[
+        (road_links.road_classification.str.lower().str.isin(primary))
+        & (
+            road_links.form_of_way.str.lower().str.contains("single", na=False)
+        ),  # single carriageways
         "combined_label",
     ] = "A_single"
+
     return road_links
 
 
@@ -339,29 +354,36 @@ def edge_initial_speed_func(
     Returns
     -------
     road_links: pd.DataFrame
-        with speed information
+        with derived initial_flow_speeds
     """
+    required_cols = {"combined_label", "urban"}
+    assert required_cols.issubset(
+        road_links.columns
+    ), f"Missing required columns: {sorted(required_cols - set(road_links.columns))} in edge_initial_speed_func!"
 
-    assert "combined_label" in road_links.columns, "combined_label column not exists!"
-    assert "urban" in road_links.columns, "urban column not exists!"
-
-    if (
-        "free_flow_speeds" not in road_links.columns
-    ):  # add free-flow speeds if not exist
+    # add free-flow speeds
+    if "free_flow_speeds" not in road_links.columns:
         road_links["free_flow_speeds"] = road_links.combined_label.map(
             free_flow_speed_dict
         )
-
+    # apply urban speed restriction
     road_links.loc[road_links["urban"] == 1, "free_flow_speeds"] = road_links[
         "combined_label"
-    ].map(
-        urban_flow_speed_dict
-    )  # urban speed restriction
-    road_links["min_flow_speeds"] = road_links.combined_label.map(min_flow_speed_dict)
+    ].map(urban_flow_speed_dict)
+    # add minimum speed restriction
+    if "min_flow_speeds" not in road_links.columns:
+        road_links["min_flow_speeds"] = road_links.combined_label.map(
+            min_flow_speed_dict
+        )
+    if "breakpoint_flows" not in road_links.columns:
+        road_links["breakpoint_flows"] = road_links.combined_label.map(
+            flow_breakpoint_dict
+        )
+    # estimate initial flow speeds for individual links
     road_links["initial_flow_speeds"] = road_links["free_flow_speeds"]
-    road_links["breakpoint_flows"] = road_links.combined_label.map(flow_breakpoint_dict)
     if max_flow_speed_dict is not None:
-        road_links["max_speeds"] = road_links["e_id"].map(max_flow_speed_dict)
+        if "max_speeds" not in road_links.columns:
+            road_links["max_speeds"] = road_links["e_id"].map(max_flow_speed_dict)
         # if max < min: close the roads
         road_links.loc[
             road_links.max_speeds < road_links.min_flow_speeds, "initial_flow_speeds"
@@ -413,20 +435,20 @@ def edge_init(
     road_links: gpd.GeoDataFrame
         Road links with added attributes.
     """
+    assert "lanes" in road_links.columns, "lanes is missing in egde_init!"
+
     # reclassification
-    road_links = edge_reclassification_func(road_links)
-    road_links = edge_initial_speed_func(
-        road_links,
-        flow_breakpoint_dict,
-        free_flow_speed_dict,
-        urban_flow_speed_dict,
-        min_flow_speed_dict,
-        max_flow_speed_dict,
-    )
-    assert "combined_label" in road_links.columns, "combined_label column not exists!"
-    assert (
-        "initial_flow_speeds" in road_links.columns
-    ), "initial_flow_speeds column not exists!"
+    if "combined_label" not in road_links.columns:
+        road_links = edge_reclassification_func(road_links)
+    if "initial_flow_speeds" not in road_links.columns:
+        road_links = edge_initial_speed_func(
+            road_links,
+            flow_breakpoint_dict,
+            free_flow_speed_dict,
+            urban_flow_speed_dict,
+            min_flow_speed_dict,
+            max_flow_speed_dict,
+        )
 
     # initialise key variables
     road_links["acc_flow"] = 0.0
@@ -462,6 +484,17 @@ def update_edge_speed(
     pd.DataFrame or None
         Updated road links DataFrame if inplace=False, otherwise None.
     """
+    required_cols = {
+        "acc_flow",
+        "initial_flow_speeds",
+        "min_flow_speeds",
+        "breakpoint_flows",
+        "combined_label",
+    }
+    assert required_cols.issubset(
+        road_links.columns
+    ), f"Missing required columns: {sorted(required_cols - set(road_links.columns))} in update_edge_speed!"
+
     acc_flow = road_links["acc_flow"].to_numpy(dtype=float)  # vehicles per day
     vp = acc_flow / 24.0  # vehicles per hour
     initial_speed = road_links["initial_flow_speeds"].to_numpy(dtype=float)
@@ -506,7 +539,11 @@ def create_igraph_network(
     vehicle_type: str = "car",
 ) -> igraph.Graph:
     """Create an undirected igraph network."""
-    # cols = road_links.columns.tolist()
+    required_cols = {"geometry", "acc_speed", "average_toll_cost"}
+    assert required_cols.issubset(
+        road_links.columns
+    ), f"Missing required columns: {sorted(required_cols - set(road_links.columns))} in create_igraph_network!"
+
     road_links["length_mile"] = road_links.geometry.length * cons.CONV_METER_TO_MILE
     road_links["time_hr"] = 1.0 * road_links.length_mile / road_links.acc_speed
     compute_costs_for_links(
