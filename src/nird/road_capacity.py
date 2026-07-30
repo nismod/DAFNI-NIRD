@@ -777,6 +777,59 @@ def update_od_matrix(
     )
 
 
+def sync_isolated_od_pairs(
+    conn,
+    isolated_table: str = "isolated_od",
+    remain_table: str = "remain_od",
+    temp_table: str = "temp_isolated_flow_matrix",
+) -> float:
+    """Aggregate newly isolated OD pairs and remove them from the remaining OD table.
+
+    Once an OD pair is identified as having no feasible path in the current network,
+    it should not be reconsidered in later iterations. This keeps the isolation set
+    stable and avoids duplicating the same OD pairs as isolation repeatedly.
+    """
+    agg_table = f"{temp_table}_agg"
+    conn.execute(
+        f"""
+        CREATE OR REPLACE TEMP TABLE {agg_table} AS
+        SELECT
+            origin,
+            destination,
+            SUM(flow) AS flow
+        FROM {temp_table}
+        GROUP BY origin, destination;
+        """
+    )
+    isolated_total = (
+        conn.execute(f"SELECT COALESCE(SUM(flow), 0.0) FROM {agg_table}").fetchone()[0]
+        or 0.0
+    )
+
+    if isolated_total > 0:
+        conn.execute(
+            f"""
+            INSERT INTO {isolated_table}
+            SELECT origin, destination, flow
+            FROM {agg_table};
+            """
+        )
+        conn.execute(
+            f"""
+            DELETE FROM {remain_table}
+            WHERE EXISTS (
+                SELECT 1
+                FROM {agg_table} agg
+                WHERE agg.origin = {remain_table}.origin_node
+                  AND agg.destination = {remain_table}.destination_node
+            );
+            """
+        )
+
+    conn.execute(f"DROP TABLE IF EXISTS {agg_table}")
+    return float(isolated_total)
+
+
 def find_least_cost_path(
     params: Tuple,
 ) -> Tuple[int, List[str], List[int], List[float]]:
@@ -1456,7 +1509,7 @@ def network_flow_model(
         flush_isolated_batch()
         logging.info(f"The least-cost path flow allocation time: {time.time() - st}.")
 
-        # isolated flow
+        # isolated flows
         temp_isolation = (
             conn.execute(
                 "SELECT COALESCE(SUM(flow), 0.0) FROM temp_isolated_flow_matrix"
@@ -1465,21 +1518,7 @@ def network_flow_model(
         )
         logging.info(f"Non_allocated_flow: {temp_isolation}")
         if temp_isolation > 0:
-            conn.execute(
-                """
-                CREATE OR REPLACE TEMP TABLE temp_isolated_flow_matrix_agg AS
-                SELECT
-                    origin,
-                    destination,
-                    SUM(flow) AS flow
-                FROM temp_isolated_flow_matrix
-                GROUP BY origin, destination;
-                """
-            )
-            conn.execute(
-                "INSERT INTO isolated_od SELECT * FROM temp_isolated_flow_matrix_agg"
-            )
-            conn.execute("DROP TABLE IF EXISTS temp_isolated_flow_matrix_agg")
+            temp_isolation = sync_isolated_od_pairs(conn)
         conn.execute("DROP TABLE IF EXISTS temp_isolated_flow_matrix")
 
         # remaining flow
