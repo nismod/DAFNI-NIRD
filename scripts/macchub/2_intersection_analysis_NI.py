@@ -26,13 +26,14 @@ def intersect_features_with_raster(
     raster_key: str,  # this is used for logging purposes only
     features: gpd.GeoDataFrame,
     flood_type: str,
+    scenario_key: str,
 ) -> gpd.GeoDataFrame:
     """
     Intersects vector features with a raster dataset to compute flood depth for each
         feature.
 
-    Parameters:
         raster (np.ndarray): Raster band data containing flood values.
+    scenario_key: str,
         grid (gpd.GeoDataFrame): Raster grid metadata used for spatial operations.
         raster_key (str): Identifier for the raster dataset.
         features (gpd.GeoDataFrame): GeoDataFrame containing vector features (e.g.,
@@ -53,9 +54,22 @@ def intersect_features_with_raster(
 
     intersections = intersection.split_linestrings(prepared, grid)
     intersections = intersection.apply_indices(intersections, grid)
-    intersections[f"flood_depth_{flood_type}"] = (
-        intersection.get_raster_values_for_splits(intersections, raster)
-    )
+
+    # flood depth code: map to value (1: 0-0.3, 2:0.3-1, 3: >1m)
+    # flood range -> depth (m)
+    # baseline: (1->0.15, 2->0.65, 3->1.5)
+    # future: (1->0.3, 2->1, 3->2)
+    raster_values = intersection.get_raster_values_for_splits(intersections, raster)
+    depth_mappings = {
+        "base": {1: 0.15, 2: 0.65, 3: 1.5},
+        "future": {1: 0.3, 2: 1.0, 3: 2.0},
+    }
+    try:
+        depth_mapping = depth_mappings[scenario_key]
+    except KeyError as error:
+        raise ValueError("scenario_key must be 'base' or 'future'") from error
+
+    intersections[f"flood_depth_{flood_type}"] = raster_values.replace(depth_mapping)
 
     # reproject back
     # intersections = intersections.to_crs("epsg:27700")
@@ -164,8 +178,8 @@ def clip_raster_with_polygon(
         )
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    with rasterio.open(output_path, "w", **metadata) as destination:
-        destination.write(clipped_data)
+    # with rasterio.open(output_path, "w", **metadata) as destination:
+    #     destination.write(clipped_data)
 
     clipped_raster = io.read_raster_band_data(output_path)
     clipped_grid, _ = io.read_raster_metadata(output_path)
@@ -484,6 +498,7 @@ def main(
         nation,
         features,
         flood_type,
+        scenario_key,
     )
     temp.reset_index(drop=True, inplace=True)
 
@@ -493,13 +508,13 @@ def main(
             temp.loc[
                 (temp.road_classification == "Motorway"),
                 "flood_depth_surface",
-            ] = (temp["flood_depth_surface"] + 100).clip(lower=0)
+            ] = (temp["flood_depth_surface"] + 1.0).clip(lower=0)
         elif flood_type == "river":
             temp.loc[
                 (temp.road_classification == "Motorway"),
                 "flood_depth_river",
             ] = (
-                temp["flood_depth_river"] + 200
+                temp["flood_depth_river"] + 2.0
             ).clip(lower=0)
         else:
             logging.info("Please enter the type of flood!")
