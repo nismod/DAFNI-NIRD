@@ -178,8 +178,8 @@ def clip_raster_with_polygon(
         )
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    # with rasterio.open(output_path, "w", **metadata) as destination:
-    #     destination.write(clipped_data)
+    with rasterio.open(output_path, "w", **metadata) as destination:
+        destination.write(clipped_data)
 
     clipped_raster = io.read_raster_band_data(output_path)
     clipped_grid, _ = io.read_raster_metadata(output_path)
