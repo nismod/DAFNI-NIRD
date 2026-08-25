@@ -565,6 +565,11 @@ def main(
 
 
 if __name__ == "__main__":
+    if len(sys.argv) != 2 or sys.argv[1] not in {"base", "future"}:
+        raise SystemExit(
+            "Usage: python scripts/macchub/2_intersection_analysis_NI.py "
+            "<base|future>"
+        )
 
     inputs_dict = {
         "flood_path_base": base_path / "hazards" / "all_Q100_Defended.tif",
@@ -575,7 +580,7 @@ if __name__ == "__main__":
         "clip_path": base_path / "hazards" / "ni-historical-flooding-aug2008.gpkg",
     }
     nation = "northern_ireland"
-    scenario_key = "base"  # base or future
+    scenario_key = sys.argv[1]
     flood_type = "river"  # surface or river
     main(
         nation=nation,
