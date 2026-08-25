@@ -157,6 +157,9 @@ def clip_raster_with_polygon(
                 "width": clipped_data.shape[2],
                 "transform": clipped_transform,
                 "nodata": nodata,
+                "compress": "deflate",
+                "zlevel": 9,
+                "predictor": 3 if np.issubdtype(clipped_data.dtype, np.floating) else 2,
             }
         )
 
