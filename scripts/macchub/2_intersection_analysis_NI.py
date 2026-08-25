@@ -450,9 +450,7 @@ def main(
             clipped_raster_path,
         )
     else:
-        logging.info(
-            "No clipping path provided. Using full extent of input raster."
-        )
+        logging.info("No clipping path provided. Using full extent of input raster.")
         with rasterio.open(flood_path) as src:
             left, bottom, right, top = src.bounds
         bbox = box(left, bottom, right, top)
@@ -476,16 +474,16 @@ def main(
     if scenario_key == "base":  # for base scenario
         if flood_type == "surface":
             temp.loc[
-                (temp.road_classification == "Motorway")
-                | ((temp.road_classification == "A Road") & (temp["trunk_road"])),
+                (temp.road_classification == "Motorway"),
                 "flood_depth_surface",
             ] = (temp["flood_depth_surface"] + 100).clip(lower=0)
         elif flood_type == "river":
             temp.loc[
-                (temp.road_classification == "Motorway")
-                | ((temp.road_classification == "A Road") & (temp["trunk_road"])),
+                (temp.road_classification == "Motorway"),
                 "flood_depth_river",
-            ] = (temp["flood_depth_river"] + 200).clip(lower=0)
+            ] = (
+                temp["flood_depth_river"] + 200
+            ).clip(lower=0)
         else:
             logging.info("Please enter the type of flood!")
             sys.exit()
