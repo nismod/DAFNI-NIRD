@@ -198,9 +198,9 @@ def compute_maximum_speed_on_flooded_roads(
 def compute_damage_level_on_flooded_roads(
     fldType: str,
     road_classification: str,
-    trunk_road: str,
     road_label: str,
     fldDepth: float,
+    trunk_road: bool = False,
 ) -> str:
     """
     Determines the damage level of roads based on flood type, road classification,
@@ -209,7 +209,7 @@ def compute_damage_level_on_flooded_roads(
     Parameters:
         fldType (str): Type of flood ("surface" or "river").
         road_classification (str): Classification of road (e.g., "Motorway", "A Road").
-        trunk_road (bool): Indicates if the road is a trunk road (True/False).
+        trunk_road (bool): Retained for compatibility but ignored for NI roads.
         road_label (str): Label of the road (e.g., "road", "tunnel", "bridge").
         fldDepth (float): Flood depth in meters.
 
@@ -220,10 +220,7 @@ def compute_damage_level_on_flooded_roads(
 
     depth = fldDepth * 100  # convert from m to cm
     if fldType == "surface":
-        if road_label == "tunnel" and (
-            road_classification == "Motorway"
-            or (road_classification == "A Road" and trunk_road)
-        ):
+        if road_label == "tunnel" and road_classification == "Motorway":
             if depth < 50:
                 return "no"
             elif 50 <= depth < 100:
@@ -236,10 +233,7 @@ def compute_damage_level_on_flooded_roads(
                 return "severe"
             else:
                 return np.nan
-        elif road_label != "tunnel" and (
-            road_classification == "Motorway"
-            or (road_classification == "A Road" and trunk_road)
-        ):
+        elif road_label != "tunnel" and road_classification == "Motorway":
             if depth < 50:
                 return "no"
             elif 50 <= depth < 100:
@@ -267,10 +261,7 @@ def compute_damage_level_on_flooded_roads(
                 return np.nan
 
     elif fldType == "river":
-        if road_label == "tunnel" and (
-            road_classification == "Motorway"
-            or (road_classification == "A Road" and trunk_road)
-        ):
+        if road_label == "tunnel" and road_classification == "Motorway":
             if depth < 50:
                 return "no"
             elif 50 <= depth < 100:
@@ -283,10 +274,7 @@ def compute_damage_level_on_flooded_roads(
                 return "extensive"
             else:
                 return np.nan
-        elif road_label != "tunnel" and (
-            road_classification == "Motorway"
-            or (road_classification == "A Road" and trunk_road)
-        ):
+        elif road_label != "tunnel" and road_classification == "Motorway":
             if depth < 50:
                 return "no"
             elif 50 <= depth < 100:
@@ -315,7 +303,7 @@ def compute_damage_level_on_flooded_roads(
             else:
                 return np.nan
     else:
-        logging.info("Please enter the type of flood!")
+        raise ValueError("flood type must be 'surface' or 'river'")
 
 
 def features_with_damage(
@@ -338,6 +326,8 @@ def features_with_damage(
         gpd.GeoDataFrame: Updated GeoDataFrame of road links with maximum flood depth
             and damage levels.
     """
+
+    intersections = intersections.copy()
 
     # Flood depth
     if (
@@ -413,6 +403,12 @@ def main(
     out_path: str,
     clip_path: str = None,
 ):
+    if flood_type not in {"surface", "river"}:
+        raise ValueError("flood_type must be 'surface' or 'river'")
+
+    out_path = Path(out_path)
+    out_path.mkdir(parents=True, exist_ok=True)
+
     # damage level dicts
     damage_level_dict = {
         "no": 0,
@@ -457,8 +453,8 @@ def main(
         if src.crs != features.crs:
             features = features.to_crs(src.crs)
 
-        clipped = features.clip(bbox)
-        clipped.reset_index(drop=True, inplace=True)
+        features = features.clip(bbox)
+        features.reset_index(drop=True, inplace=True)
 
     # intersection analysis
     temp = intersect_features_with_raster(
@@ -492,7 +488,6 @@ def main(
         lambda row: compute_damage_level_on_flooded_roads(
             flood_type,
             row["road_classification"],
-            row["trunk_road"],
             row["road_label"],
             row[f"flood_depth_{flood_type}"],
         ),
@@ -502,6 +497,8 @@ def main(
 
     # save intersections
     intersections = gpd.GeoDataFrame(columns=["e_id", "length", "index_i", "index_j"])
+    depth_column = f"flood_depth_{flood_type}"
+    damage_column = f"damage_level_{flood_type}"
     intersections = intersections.merge(
         temp[
             [
@@ -509,8 +506,8 @@ def main(
                 "length",
                 "index_i",
                 "index_j",
-                "flood_depth_river",
-                "damage_level_river",
+                depth_column,
+                damage_column,
             ]
         ],
         on=["e_id", "length", "index_i", "index_j"],
