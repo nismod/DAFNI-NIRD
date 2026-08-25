@@ -503,22 +503,22 @@ def main(
     temp.reset_index(drop=True, inplace=True)
 
     # adjust flood depths for embankment heights based on road classification
-    if scenario_key == "base":  # for base scenario
-        if flood_type == "surface":
-            temp.loc[
-                (temp.road_classification == "Motorway"),
-                "flood_depth_surface",
-            ] = (temp["flood_depth_surface"] + 1.0).clip(lower=0)
-        elif flood_type == "river":
-            temp.loc[
-                (temp.road_classification == "Motorway"),
-                "flood_depth_river",
-            ] = (
-                temp["flood_depth_river"] + 2.0
-            ).clip(lower=0)
-        else:
-            logging.info("Please enter the type of flood!")
-            sys.exit()
+    # if scenario_key == "base":  # for base scenario
+    #     if flood_type == "surface":
+    #         temp.loc[
+    #             (temp.road_classification == "Motorway"),
+    #             "flood_depth_surface",
+    #         ] = (temp["flood_depth_surface"] - 1.0).clip(lower=0)
+    #     elif flood_type == "river":
+    #         temp.loc[
+    #             (temp.road_classification == "Motorway"),
+    #             "flood_depth_river",
+    #         ] = (
+    #             temp["flood_depth_river"] - 2.0
+    #         ).clip(lower=0)
+    #     else:
+    #         logging.info("Please enter the type of flood!")
+    #         sys.exit()
 
     temp[f"damage_level_{flood_type}"] = temp.apply(
         lambda row: compute_damage_level_on_flooded_roads(
