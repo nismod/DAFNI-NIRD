@@ -421,14 +421,32 @@ def main(
 
     # flows
     flows = gpd.read_parquet(flow_path)
-    flows.rename(
+    # check whether flows already has "current_capacity"
+    if "current_capacity" in flows.columns:
+        flows.rename(columns={"current_capacity": "total_capacity"}, inplace=True)
+
+    flows = flows.rename(
         columns={
             "acc_capacity": "current_capacity",
             "acc_speed": "current_speed",
             "acc_flow": "current_flow",
-        },
-        inplace=True,
+        }
     )
+    flows = flows.loc[:, ~flows.columns.duplicated()].copy()
+    flow_columns = [
+        "combined_label",
+        "free_flow_speeds",
+        "initial_flow_speeds",
+        "min_flow_speeds",
+        "current_capacity",
+        "current_speed",
+        "current_flow",
+    ]
+    missing_flow_columns = set(flow_columns) - set(flows.columns)
+    if missing_flow_columns:
+        raise ValueError(
+            f"Flow data is missing required columns: {sorted(missing_flow_columns)}"
+        )
 
     # network edges
     road_links = gpd.read_parquet(link_path)
@@ -523,19 +541,10 @@ def main(
         damage_level_dict,
         damage_level_dict_reverse,
     )
-    temp_links = temp_links.merge(
-        flows[
-            [
-                "e_id",
-                "combined_label",
-                "free_flow_speeds",
-                "initial_flow_speeds",
-                "min_flow_speeds",
-                "current_capacity",
-                "current_speed",
-                "current_flow",
-            ]
-        ],
+    temp_links = temp_links.drop(
+        columns=[column for column in flow_columns if column in temp_links.columns]
+    ).merge(
+        flows[["e_id", *flow_columns]],
         how="left",
         on="e_id",
     )
