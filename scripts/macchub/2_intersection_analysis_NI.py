@@ -451,8 +451,16 @@ def main(
         )
     else:
         logging.info(
-            "No clipping path provided. Using full extent of features and raster."
+            "No clipping path provided. Using full extent of input raster."
         )
+        with rasterio.open(flood_path) as src:
+            left, bottom, right, top = src.bounds
+        bbox = box(left, bottom, right, top)
+        if src.crs != features.crs:
+            features = features.to_crs(src.crs)
+
+        clipped = features.clip(bbox)
+        clipped.reset_index(drop=True, inplace=True)
 
     # intersection analysis
     temp = intersect_features_with_raster(
@@ -466,11 +474,21 @@ def main(
 
     # adjust flood depths for embankment heights based on road classification
     if scenario_key == "base":  # for base scenario
-        temp.loc[
-            (temp.road_classification == "Motorway")
-            | ((temp.road_classification == "A Road") & (temp["trunk_road"])),
-            "flood_depth_river",
-        ] = (temp["flood_depth_river"] - 200).clip(lower=0)
+        if flood_type == "surface":
+            temp.loc[
+                (temp.road_classification == "Motorway")
+                | ((temp.road_classification == "A Road") & (temp["trunk_road"])),
+                "flood_depth_surface",
+            ] = (temp["flood_depth_surface"] + 100).clip(lower=0)
+        elif flood_type == "river":
+            temp.loc[
+                (temp.road_classification == "Motorway")
+                | ((temp.road_classification == "A Road") & (temp["trunk_road"])),
+                "flood_depth_river",
+            ] = (temp["flood_depth_river"] + 200).clip(lower=0)
+        else:
+            logging.info("Please enter the type of flood!")
+            sys.exit()
 
     temp[f"damage_level_{flood_type}"] = temp.apply(
         lambda row: compute_damage_level_on_flooded_roads(
@@ -482,7 +500,7 @@ def main(
         ),
         axis=1,
     )
-    temp = temp[temp["flood_depth_river"] >= 0].reset_index(drop=True)
+    temp = temp[temp[f"flood_depth_{flood_type}"] >= 0].reset_index(drop=True)
 
     # save intersections
     intersections = gpd.GeoDataFrame(columns=["e_id", "length", "index_i", "index_j"])
@@ -542,9 +560,9 @@ def main(
 if __name__ == "__main__":
 
     inputs_dict = {
-        "flood_path_base": base_path / "hazards" / "all_Q1OO_Defended.tif",
-        "flood_path_future": base_path / "hazards" / "all_Q1OOCC_Defended.tif",
-        "link_path": base_path / "network" / "edges_final.gpq",
+        "flood_path_base": base_path / "hazards" / "all_Q100_Defended.tif",
+        "flood_path_future": base_path / "hazards" / "all_Q100CC_Defended.tif",
+        "link_path": base_path / "networks" / "edges_final.gpq",
         "flow_path": base_path.parent / "outputs" / "NI" / "edge_flow_NI.gpq",
         "out_path": base_path.parent / "outputs" / "NI",
         "clip_path": base_path / "hazards" / "ni-historical-flooding-aug2008.gpkg",
