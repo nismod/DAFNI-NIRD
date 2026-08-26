@@ -291,9 +291,11 @@ def main(
     network, valid_road_links = func.create_igraph_network(
         valid_road_links, vehicle_type="car"
     )
+    logging.info("valid_road_links head:\n%s", valid_road_links.head())
 
     # make sure to pass disrupted flow for rerouting analysis
     disrupted_od.rename(columns={"disrupted_flow": "Car21"}, inplace=True)
+    logging.info("disrupted_od head:\n%s", disrupted_od.head())
 
     # run flow model
     logging.info("Running flow simulation...")
