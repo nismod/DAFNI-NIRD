@@ -1,4 +1,6 @@
 # %%
+# ruff: noqa
+
 import warnings
 import sys
 import logging
@@ -80,7 +82,9 @@ def main(event_key: str, chunk_size: int = CHUNK_SIZE, consolidate: bool = True)
     logging.info(f"Found {len(flood_links_set)} flooded links.")
 
     # Use pyarrow dataset to stream base_od in batches
-    base_od_path = str(out_path / "disruption_analysis" / "od" / "odpfc_2021_ssp0.pq")
+    base_od_path = str(
+        out_path / "disruption_analysis" / "od" / "odpfc_NI_base.pq"
+    )  # or xx_xx_future.pq
     dataset = ds.dataset(base_od_path, format="parquet")
 
     scanner = dataset.scanner(batch_size=chunk_size)
