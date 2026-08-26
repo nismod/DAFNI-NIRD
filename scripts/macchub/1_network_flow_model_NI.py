@@ -1,4 +1,6 @@
 # %%
+# ruff: noqa
+
 from pathlib import Path
 import sys
 import time
@@ -18,6 +20,7 @@ macc_path = Path(load_config()["paths"]["MACCHUB"])  # ./processed_data
 
 
 def main(
+    scenario_key: str,
     num_of_chunk: int,
     num_of_cpu: int,
     sample_stride=1,
@@ -48,7 +51,16 @@ def main(
     road_link_file = gpd.read_parquet(macc_path / "networks" / "edges_final.gpq")
 
     # od matrix (2021, 2030, 2050)
-    od_node = pd.read_parquet(macc_path / "od" / "od_node_NI.pq")
+    od_node = pd.read_parquet(macc_path / "od" / "od_node_updated.pq")
+    if "Car21" not in od_node.columns:
+        logging.info("Adding column 'Car21'...")
+    if scenario_key == "base":
+        od_node.rename(columns={"Count2021": "Car21"}, inplace=True)
+    elif scenario_key == "future":
+        od_node.rename(columns={"Count2050": "Car21"}, inplace=True)
+    else:
+        logging.info("Please specify the scenario. ")
+
     od_node["Car21"] = od_node["Car21"] * 2
     logging.info(f"\n{od_node}")
     logging.info(f"total flows: {od_node.Car21.sum()}")
@@ -99,9 +111,10 @@ if __name__ == "__main__":
         format="%(asctime)s %(process)d %(filename)s %(message)s", level=logging.INFO
     )
     try:
-        num_of_chunk, num_of_cpu = sys.argv[1:]
+        num_of_chunk, num_of_cpu, scenario_key = sys.argv[1:]
         sample_stride = 1
         main(
+            scenario_key,
             int(num_of_chunk),
             int(num_of_cpu),
             sample_stride,
