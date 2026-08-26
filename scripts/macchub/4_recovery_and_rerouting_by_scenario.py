@@ -1,4 +1,6 @@
 # %%
+# ruff: noqa
+
 import sys
 import json
 import warnings
@@ -13,7 +15,7 @@ import pandas as pd
 from tqdm import tqdm
 from collections import defaultdict
 
-import nird.road_revised as func
+import nird.road_capacity as func
 from nird.utils import load_config, get_flow_on_edges
 import duckdb
 
@@ -78,6 +80,7 @@ def load_scenarios(base_path: Path) -> Tuple[Dict, Dict]:
 
 
 def main(
+    scenario_key: str,
     event_key: str,
     num_of_chunk: int,
     num_of_cpu: int,
@@ -90,7 +93,7 @@ def main(
         / "outputs"
         / "rerouting_analysis"
         / "dbs"
-        / f"recovery_{event_key}_{scenario_idx}_baseline.duckdb"
+        / f"recovery_{event_key}_{scenario_idx}_{scenario_key}.duckdb"
     )
     logging.info(f"Database path is: {db_path}")
     out_path = macchub_path.parent / "outputs" / "rerouting_analysis" / str(event_key)
@@ -114,7 +117,7 @@ def main(
         / "outputs"
         / "rerouting_analysis"
         / "od"
-        / f"odpfc_{event_key}_baseline.pq",
+        / f"odpfc_{event_key}_{scenario_key}.pq",
         engine="fastparquet",
     )
     disrupted_candidates["od_id"] = disrupted_candidates.index  # numbering od pairs
@@ -125,7 +128,7 @@ def main(
         / "outputs"
         / "disruption_analysis"
         / "links"
-        / f"road_links_{event_key}_baseline.gpq"
+        / f"road_links_{event_key}_{scenario_key}.gpq"
     )
     road_links["breakpoint_flows"] = road_links["combined_label"].map(
         flow_breakpoint_dict
@@ -134,7 +137,7 @@ def main(
     # Start recovery and rerouting analysis for each scenario
     cDict = {}
     logging.info(f"Rerouting Analysis on Scenario-{scenario_idx} of recovery...")
-    iso_out_path = out_path / f"trip_isolations_{scenario_idx}.pq"
+    iso_out_path = out_path / f"{scenario_key}" / f"trip_isolations_{scenario_idx}.pq"
     event_day = conditions[scenario_idx]
     logging.info(f"Updating edge capacities on D-{scenario_idx} of recovery...")
     road_links["acc_capacity"] = road_links["current_capacity"]
@@ -333,14 +336,18 @@ def main(
         columns=["rer_time", "rer_operate", "rer_toll", "rerouting_cost"],
     ).reset_index()
     cost_df.rename(columns={"index": "scenario"}, inplace=True)
-    cost_df.to_csv(out_path / f"rerouting_cost_{scenario_idx}.csv", index=False)
+    cost_df.to_csv(
+        out_path / f"{scenario_key}" / f"rerouting_cost_{scenario_idx}.csv", index=False
+    )
 
     # edge flows
     road_links = road_links.set_index("e_id")
     road_links.update(valid_road_links.set_index("e_id")["acc_flow"])
     road_links = road_links.reset_index()
     road_links["change_flow"] = road_links["acc_flow"] - road_links["current_flow"]
-    road_links.to_parquet(out_path / f"edge_flows_{scenario_idx}.gpq")
+    road_links.to_parquet(
+        out_path / f"{scenario_key}" / f"edge_flows_{scenario_idx}.gpq"
+    )
 
 
 if __name__ == "__main__":
@@ -348,11 +355,17 @@ if __name__ == "__main__":
         format="%(asctime)s %(process)d %(filename)s %(message)s", level=logging.INFO
     )
     try:
-        event_key, num_of_chunk, num_of_cpu, scenario_idx = sys.argv[1:]
-        main(event_key, int(num_of_chunk), int(num_of_cpu), int(scenario_idx))
+        event_key, num_of_chunk, num_of_cpu, scenario_idx, scenario_key = sys.argv[1:]
+        main(
+            scenario_key,
+            event_key,
+            int(num_of_chunk),
+            int(num_of_cpu),
+            int(scenario_idx),
+        )
     except (IndexError, ValueError):
         logging.info(
-            "Please provide inputs: event_key, num_of_chunk, num_of_cpu, "
+            "Please provide inputs: scenario_key, event_key, num_of_chunk, num_of_cpu, "
             "and scenario_idx!"
         )
         sys.exit(1)
