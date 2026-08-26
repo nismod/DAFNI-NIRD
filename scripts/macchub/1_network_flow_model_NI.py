@@ -26,14 +26,14 @@ def main(
     sample_stride=1,
 ):
     start_time = time.time()
-    db_path = macc_path / "dbs" / "macc_ni.duckdb"
+    db_path = macc_path / "dbs" / f"macc_ni_{scenario_key}.duckdb"
     logging.info(f"Database path is: {db_path}")
 
     # outpath
     out_path = macc_path.parent / "outputs"
     out_path.mkdir(parents=True, exist_ok=True)
-    iso_out_path = out_path / "isolation_NI.pq"
-    odpfc_out_path = out_path / "odpfc_NI.pq"
+    iso_out_path = out_path / f"isolation_NI_{scenario_key}.pq"
+    odpfc_out_path = out_path / f"odpfc_NI_{scenario_key}.pq"
 
     # model parameters
     with open(macc_path / "parameters" / "flow_breakpoint_dict.json", "r") as f:
@@ -102,7 +102,7 @@ def main(
     )
 
     # export files
-    road_links.to_parquet(out_path / "edge_flow_NI.gpq")
+    road_links.to_parquet(out_path / f"edge_flow_NI_{scenario_key}.gpq")
     logging.info(f"The total simulation time: {time.time() - start_time}")
 
 
