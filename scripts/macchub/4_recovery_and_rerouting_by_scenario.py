@@ -227,12 +227,17 @@ def main(
 
     # calculate disrupted flow
     disrupted_od = disrupted_od.merge(min_capacity, how="left", on="od_id")
+
+    # disrupted_od["disrupted_flow"] = (
+    #     disrupted_od["flow"] - disrupted_od["acc_capacity"]
+    # ).clip(lower=0)
     disrupted_od["disrupted_flow"] = (
-        disrupted_od["flow"] - disrupted_od["acc_capacity"]
+        disrupted_od["flow"] - disrupted_od["acc_capacity"].clip(lower=0)
     ).clip(lower=0)
     disrupted_od = disrupted_od[disrupted_od["disrupted_flow"] > 0].reset_index(
         drop=True
     )
+
     logging.info(f"The total disrupted flows: {disrupted_od.disrupted_flow.sum()}")
 
     # estimate the pre-event cost matrix for disrupted flows
@@ -262,7 +267,9 @@ def main(
     road_links["acc_capacity"] = (
         road_links["acc_capacity"] + road_links["disrupted_flow"]
     )
-    road_links["acc_flow"] = road_links["current_flow"] - road_links["disrupted_flow"]
+    road_links["acc_flow"] = (
+        road_links["current_flow"] - road_links["disrupted_flow"]
+    ).clip(lower=0)
 
     logging.info("Updating road speed limits...")
     func.update_edge_speed(road_links, inplace=True)
@@ -285,9 +292,12 @@ def main(
 
     # create network (time-consuming when updating network edge index)
     logging.info("Creating igraph network...")
-    valid_road_links = road_links[
-        (road_links["acc_capacity"] > 0) & (road_links["acc_speed"] > 0)
-    ].reset_index(drop=True)
+
+    # valid_road_links = road_links[
+    #     (road_links["acc_capacity"] > 0) & (road_links["acc_speed"] > 0)
+    # ].reset_index(drop=True)
+    valid_road_links = road_links.copy()
+
     network, valid_road_links = func.create_igraph_network(
         valid_road_links, vehicle_type="car"
     )
@@ -311,6 +321,7 @@ def main(
         num_of_cpu,
         db_path,
         iso_out_path=iso_out_path,
+        capacity_mode=True,
     )
 
     # estimate rerouting cost matrix
