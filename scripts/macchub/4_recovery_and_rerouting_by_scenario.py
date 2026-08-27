@@ -141,18 +141,19 @@ def main(
     event_day = conditions[scenario_idx]
     logging.info(f"Updating edge capacities on D-{scenario_idx} of recovery...")
     road_links["acc_capacity"] = road_links["current_capacity"]
+    # apply recovery to links with non-negative remaining capacities
     road_links["acc_capacity"] = road_links.apply(
         lambda row: (
-            bridge_recovery(
-                scenario_idx,
-                row["damage_level_max"],
-                row["current_capacity"],
-                row["acc_capacity"],
-                bridge_recovery_dict,
-            )
-            if row["road_label"] == "bridge"
-            else (
-                ordinary_road_recovery(
+            (
+                bridge_recovery(
+                    scenario_idx,
+                    row["damage_level_max"],
+                    row["current_capacity"],
+                    row["acc_capacity"],
+                    bridge_recovery_dict,
+                )
+                if row["road_label"] == "bridge"
+                else ordinary_road_recovery(
                     scenario_idx,
                     row["damage_level_max"],
                     row["current_capacity"],
@@ -160,6 +161,8 @@ def main(
                     road_recovery_dict,
                 )
             )
+            if row["acc_capacity"] >= 0
+            else row["acc_capacity"]
         ),
         axis=1,
     )
@@ -227,10 +230,6 @@ def main(
 
     # calculate disrupted flow
     disrupted_od = disrupted_od.merge(min_capacity, how="left", on="od_id")
-
-    # disrupted_od["disrupted_flow"] = (
-    #     disrupted_od["flow"] - disrupted_od["acc_capacity"]
-    # ).clip(lower=0)
     disrupted_od["disrupted_flow"] = (
         disrupted_od["flow"] - disrupted_od["acc_capacity"].clip(lower=0)
     ).clip(lower=0)
@@ -293,10 +292,9 @@ def main(
     # create network (time-consuming when updating network edge index)
     logging.info("Creating igraph network...")
 
-    # valid_road_links = road_links[
-    #     (road_links["acc_capacity"] > 0) & (road_links["acc_speed"] > 0)
-    # ].reset_index(drop=True)
-    valid_road_links = road_links.copy()
+    valid_road_links = road_links[
+        (road_links["acc_capacity"] > 0) & (road_links["acc_speed"] > 0)
+    ].reset_index(drop=True)
 
     network, valid_road_links = func.create_igraph_network(
         valid_road_links, vehicle_type="car"
