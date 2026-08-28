@@ -437,11 +437,13 @@ def main(
     damage_level_dict_reverse = {i: k for k, i in damage_level_dict.items()}
 
     # flows
-    flows = gpd.read_parquet(flow_path)
+    flows = gpd.read_parquet(
+        flow_path / f"edge_flow_NI_{scenario_key}.gpq"
+    )  # base / future
+
     # check whether flows already has "current_capacity"
     if "current_capacity" in flows.columns:
         flows.rename(columns={"current_capacity": "total_capacity"}, inplace=True)
-
     flows = flows.rename(
         columns={
             "acc_capacity": "current_capacity",
@@ -501,25 +503,6 @@ def main(
         scenario_key,
     )
     temp.reset_index(drop=True, inplace=True)
-
-    # adjust flood depths for embankment heights based on road classification
-    # if scenario_key == "base":  # for base scenario
-    #     if flood_type == "surface":
-    #         temp.loc[
-    #             (temp.road_classification == "Motorway"),
-    #             "flood_depth_surface",
-    #         ] = (temp["flood_depth_surface"] - 1.0).clip(lower=0)
-    #     elif flood_type == "river":
-    #         temp.loc[
-    #             (temp.road_classification == "Motorway"),
-    #             "flood_depth_river",
-    #         ] = (
-    #             temp["flood_depth_river"] - 2.0
-    #         ).clip(lower=0)
-    #     else:
-    #         logging.info("Please enter the type of flood!")
-    #         sys.exit()
-
     temp[f"damage_level_{flood_type}"] = temp.apply(
         lambda row: compute_damage_level_on_flooded_roads(
             flood_type,
@@ -590,7 +573,7 @@ if __name__ == "__main__":
         "flood_path_base": base_path / "hazards" / "all_Q100_Defended.tif",
         "flood_path_future": base_path / "hazards" / "all_Q100CC_Defended.tif",
         "link_path": base_path / "networks" / "edges_final.gpq",
-        "flow_path": base_path.parent / "outputs" / "NI" / "edge_flow_NI.gpq",
+        "flow_path": base_path.parent / "outputs" / "NI",
         "out_path": base_path.parent / "outputs" / "NI",
         "clip_path": base_path / "hazards" / "ni-historical-flooding-aug2008.gpkg",
     }
