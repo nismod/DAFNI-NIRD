@@ -63,7 +63,12 @@ def process_chunk(df_chunk: pd.DataFrame, flood_links_set: Set) -> pd.DataFrame:
 
 
 # %%
-def main(event_key: str, chunk_size: int = CHUNK_SIZE, consolidate: bool = True):
+def main(
+    scenario_key: str,
+    event_key: str,
+    chunk_size: int = CHUNK_SIZE,
+    consolidate: bool = True,
+):
     """
     event_key: e.g. 'england'
     chunk_size: number of rows per pyarrow scanner record_batch
@@ -75,16 +80,16 @@ def main(event_key: str, chunk_size: int = CHUNK_SIZE, consolidate: bool = True)
         out_path
         / "disruption_analysis"
         / "links"
-        / f"road_links_{event_key}_baseline.gpq"
-    )  # england, wales, and scotland
+        / f"road_links_{event_key}_{scenario_key}.gpq"
+    )  # event_key: england, wales, and scotland; scenario_key: baseline, future
     flood_links = road_links.loc[road_links.flood_depth_max > 0, "e_id"]
     flood_links_set = set(flood_links.tolist())
     logging.info(f"Found {len(flood_links_set)} flooded links.")
 
     # Use pyarrow dataset to stream base_od in batches
     base_od_path = str(
-        out_path / "disruption_analysis" / "od" / "odpfc_NI_base.pq"
-    )  # or xx_xx_future.pq
+        out_path / "disruption_analysis" / "od" / f"odpfc_NI_{scenario_key}.pq"
+    )  # baseline or future
     dataset = ds.dataset(base_od_path, format="parquet")
 
     scanner = dataset.scanner(batch_size=chunk_size)
@@ -122,7 +127,10 @@ def main(event_key: str, chunk_size: int = CHUNK_SIZE, consolidate: bool = True)
         # Read each part and append to a list of dataframes (avoid reading all at once if huge)
         # We'll stream read and write into a single resultant parquet by concatenating in chunks
         combined_file = (
-            out_path / "rerouting_analysis" / "od" / f"odpfc_{event_key}_baseline.pq"
+            out_path
+            / "rerouting_analysis"
+            / "od"
+            / f"odpfc_{event_key}_{scenario_key}.pq"
         )
         # Simple approach: read parts one by one and append to a single file by collecting and writing in one concat
         # If dataset is too large for memory, consider using pyarrow.parquet writer to append batches.
@@ -155,7 +163,7 @@ if __name__ == "__main__":
         format="%(asctime)s %(process)d %(filename)s %(message)s", level=logging.INFO
     )
     try:
-        event_key = sys.argv[1]
+        event_key, scenario_key = sys.argv[1:]
         # Optionally accept chunk size and consolidate flag via CLI args
         # e.g. python script.py england 50000 True
         try:
@@ -165,7 +173,9 @@ if __name__ == "__main__":
         consolidate_flag = True  # return consolidated file and remove the subparts
         if len(sys.argv) > 3:
             consolidate_flag = sys.argv[3].lower() in ("1", "true", "yes", "y")
-        main(event_key, chunk_size=chunk_size, consolidate=consolidate_flag)
+        main(
+            scenario_key, event_key, chunk_size=chunk_size, consolidate=consolidate_flag
+        )
     except (IndexError, ValueError):
         logging.info("Usage: python script.py <event_key> [chunk_size] [consolidate]")
         logging.info("Example: python script.py england 100000 False")
