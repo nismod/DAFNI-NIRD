@@ -391,6 +391,7 @@ def features_with_damage(
 
     intersections_gp = intersections.groupby("e_id", as_index=False).agg(
         {
+            "length": "sum",
             "flood_depth_max": "max",
             "damage_level_max": "max",
         }
@@ -399,11 +400,12 @@ def features_with_damage(
         int
     ).map(damage_level_dict_reverse)
 
-    features = features.merge(
-        intersections_gp[["e_id", "flood_depth_max", "damage_level_max"]],
+    features = features.drop(columns=["length"], errors="ignore").merge(
+        intersections_gp[["e_id", "length", "flood_depth_max", "damage_level_max"]],
         how="left",
         on="e_id",
     )
+    features["length"] = features["length"].fillna(0.0)
     features["flood_depth_max"] = features["flood_depth_max"].fillna(0.0)
     features["damage_level_max"] = features["damage_level_max"].fillna("no")
 
@@ -531,7 +533,7 @@ def main(
         ],
         on=["e_id", "length", "index_i", "index_j"],
         how="outer",
-    )
+    )  # length: meter
     intersections.to_parquet(out_path / f"intersections_{nation}_{scenario_key}.pq")
 
     # save road links
