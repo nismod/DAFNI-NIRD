@@ -72,8 +72,10 @@ def intersect_features_with_raster(
     intersections[f"flood_depth_{flood_type}"] = raster_values.replace(depth_mapping)
 
     # reproject back
-    # intersections = intersections.to_crs("epsg:27700")
-    intersections = intersections.to_crs(features.crs)
+    org_crs = intersections.crs
+    intersections = intersections.to_crs("epsg:27700")  # 2D crs systems
+    # intersections = intersections.to_crs(features.crs)
+    logging.info(f"Projecting Intersections from {org_crs}to {features.crs}")
     intersections["length"] = intersections.geometry.length  # segment length in meters
 
     return intersections
@@ -149,6 +151,7 @@ def clip_raster_with_polygon(
             raise ValueError("The raster has no CRS.")
         if clipper.crs != source.crs:
             clipper = clipper.to_crs(source.crs)
+            logging.info("Projecting Feature CRS to match GRID CRS...")
 
         geometries = clipper.geometry[
             clipper.geometry.notna() & ~clipper.geometry.is_empty
