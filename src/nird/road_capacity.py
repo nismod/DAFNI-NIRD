@@ -7,7 +7,8 @@ import pickle
 import sys
 import time
 import warnings
-from collections import defaultdict
+
+# from collections import defaultdict
 from multiprocessing import Pool
 from typing import Dict, List, Tuple, Optional
 
@@ -25,6 +26,9 @@ import duckdb
 
 warnings.simplefilter("ignore")
 tqdm.pandas()
+
+logger = logging.getLogger(__name__)
+_CAPACITY_PENALTY_WEIGHT = 1e18
 
 
 def select_partial_roads(
@@ -340,7 +344,7 @@ def edge_initial_speed_func(
     free_flow_speed_dict: Dict[str, float],
     urban_flow_speed_dict: Dict[str, float],
     min_flow_speed_dict: Dict[str, float],
-    max_flow_speed_dict: Dict[str, float] = None,
+    max_flow_speed_dict: Optional[Dict[str, float]] = None,
 ) -> Tuple[pd.DataFrame, Dict[str, float]]:
     """Calculate the initial vehicle speed for network edges.
 
@@ -585,10 +589,54 @@ def create_igraph_network(
     index_map = dict(zip(eids, range(len(eids))))
     road_links["e_idx"] = road_links["e_id"].map(index_map)
     if len(road_links[road_links.e_idx.isnull()]) > 0:
-        logging.info("Error: cannot find e_id in the network!")
+        logger.info("Error: cannot find e_id in the network!")
         sys.exit()
 
     return network, road_links
+
+
+def update_network_costs(
+    network: igraph.Graph,
+    road_links: pd.DataFrame,
+    vehicle_type: str = "car",
+) -> igraph.Graph:
+    """Refresh graph edge costs from road-link speeds, preserving capacity penalties."""
+    required_cols = {
+        "e_id",
+        "acc_speed",
+        "length_mile",
+        "average_toll_cost",
+    }
+    assert required_cols.issubset(
+        road_links.columns
+    ), f"Missing required columns: {sorted(required_cols - set(road_links.columns))} in update_network_costs!"
+
+    edge_ids = network.es["e_id"]
+    edge_costs = road_links.set_index("e_id").reindex(edge_ids).copy()
+    if edge_costs["acc_speed"].isna().any():
+        raise ValueError("Network contains edges missing from road_links.")
+
+    previous_weights = np.asarray(network.es["weight"], dtype=float)
+    was_penalised = previous_weights >= _CAPACITY_PENALTY_WEIGHT
+
+    edge_costs["time_hr"] = edge_costs["length_mile"] / edge_costs["acc_speed"]
+    compute_costs_for_links(edge_costs, vehicle_type=vehicle_type, inplace=True)
+    edge_costs["weight"] = (
+        edge_costs["time_cost"]
+        + edge_costs["operating_cost"]
+        + edge_costs["average_toll_cost"]
+    )
+    edge_costs.loc[was_penalised, "weight"] = _CAPACITY_PENALTY_WEIGHT
+
+    for attr in (
+        "weight",
+        "time_cost",
+        "operating_cost",
+        "average_toll_cost",
+        "length_mile",
+    ):
+        network.es[attr] = edge_costs[attr].to_list()
+    return network
 
 
 def _update_remaining_capacity(
@@ -629,7 +677,7 @@ def update_network_structure(
     """
     # update remaining edge capacities
     road_links_valid = road_links.dropna(subset=["e_idx"])
-    logging.info(
+    logger.info(
         f"#road_links: {len(road_links)}, #valid_links: {len(road_links_valid)}"
     )
     road_link_cap_cols = road_links_valid[
@@ -666,15 +714,14 @@ def update_network_structure(
             if pd.notna(idx)
         ]
         if penalised_edge_indices:
-            penalty_weight = 1e18
             for edge_idx in penalised_edge_indices:
-                network.es[edge_idx]["weight"] = penalty_weight
-            logging.info(f"Penalised {len(penalised_edge_indices)} saturated edges")
+                network.es[edge_idx]["weight"] = _CAPACITY_PENALTY_WEIGHT
+            logger.info(f"Penalised {len(penalised_edge_indices)} saturated edges")
         num_of_edges_update = len(list(network.es))
         if num_of_edges_update == num_of_edges:
-            logging.info("The network structure does not change!")
+            logger.info("The network structure does not change!")
             return network, road_links
-        logging.info(
+        logger.info(
             f"The remaining number of edges in the network: {num_of_edges_update}"
         )
         return network, road_links
@@ -689,92 +736,15 @@ def update_network_structure(
     network.delete_edges(list(zero_capacity_edges))
     num_of_edges_update = len(list(network.es))
     if num_of_edges_update == num_of_edges:
-        logging.info("The network structure does not change!")
+        logger.info("The network structure does not change!")
         return network, road_links
-    logging.info(f"The remaining number of edges in the network: {num_of_edges_update}")
+    logger.info(f"The remaining number of edges in the network: {num_of_edges_update}")
 
     # convert edge_id to edge_idx as per network edges
     index_map = {eid: idx for idx, eid in enumerate(network.es["e_id"])}
     road_links["e_idx"] = road_links["e_id"].map(index_map)  # return nan if empty
 
     return network, road_links
-
-
-def extract_od_pairs(
-    od: pd.DataFrame,
-) -> Tuple[List[str], Dict[str, List[str]], Dict[str, List[int]]]:
-    """Prepare the OD matrix.
-
-    Parameters
-    ----------
-    od: pd.DataFrame
-        Table of origin-destination passenger flows.
-
-    Returns
-    -------
-    list_of_origin_nodes: list
-        A list of origin nodes.
-    dict_of_destination_nodes: dict[str, list[str]]
-        A dictionary recording a list of destination nodes for each origin node.
-    dict_of_origin_supplies: dict[str, list[int]]
-        A dictionary recording a list of flows for each origin-destination pair.
-    """
-    list_of_origin_nodes = []
-    dict_of_destination_nodes: Dict[str, List[str]] = defaultdict(list)
-    dict_of_origin_supplies: Dict[str, List[float]] = defaultdict(list)
-    for row in od.itertuples():
-        from_node = row["origin_node"]
-        to_node = row["destination_node"]
-        Count: float = row["Car21"]
-        list_of_origin_nodes.append(from_node)  # [nd_id...]
-        dict_of_destination_nodes[from_node].append(to_node)  # {nd_id: [nd_id...]}
-        dict_of_origin_supplies[from_node].append(Count)  # {nd_id: [car21...]}
-
-    # Extract identical origin nodes
-    list_of_origin_nodes = list(set(list_of_origin_nodes))
-    list_of_origin_nodes.sort()
-
-    return (
-        list_of_origin_nodes,
-        dict_of_destination_nodes,
-        dict_of_origin_supplies,
-    )
-
-
-def update_od_matrix(
-    temp_flow_matrix: pd.DataFrame,
-) -> Tuple[pd.DataFrame, pd.DataFrame, float]:
-    """Split OD allocations into routable rows and isolated leftovers.
-
-    Parameters
-    ----------
-    temp_flow_matrix : pd.DataFrame
-        DataFrame with columns "origin", "destination", "path" (list of edge ids),
-        and "flow" representing per-OD assignments prior to capacity checks.
-
-    Returns
-    -------
-    pd.DataFrame
-        Filtered copy containing only rows with a non-empty path.
-    pd.DataFrame
-        Rows whose "path" lists are empty (no feasible route found).
-    float
-        Total isolated flow (sum of the "flow" values with empty paths).
-    """
-
-    mask = temp_flow_matrix["path"].apply(lambda x: len(x) == 0)
-    # isolated od
-    isolated_flow_matrix = temp_flow_matrix.loc[mask].reset_index(drop=True)
-    isolated_flow_matrix.drop(columns="path", inplace=True)
-    temp_isolation = isolated_flow_matrix.flow.sum()  # 666
-    # allocated od (before adjustment)
-    temp_flow_matrix = temp_flow_matrix[~mask].reset_index(drop=True)  # 1032
-
-    return (
-        temp_flow_matrix,
-        isolated_flow_matrix,
-        temp_isolation,
-    )
 
 
 def sync_isolated_od_pairs(
@@ -882,14 +852,13 @@ def worker_init_path(
     """
     global shared_network
     shared_network = pickle.loads(shared_network_pkl)
-    return None
 
 
 def itter_path(
     network,
     road_links,
     temp_flow_matrix: Optional[pd.DataFrame] = None,
-    num_of_chunk: int = None,
+    num_of_chunk: Optional[int] = None,
     num_of_cpu: Optional[int] = None,
     apply_od_adjustment: bool = True,
     db_path: str = "results.duckdb",
@@ -918,7 +887,7 @@ def itter_path(
         total_rows = len(temp_flow_matrix)
 
     if total_rows == 0:
-        logging.info("No rows available for itter_path; skipping.")
+        logger.info("No rows available for itter_path; skipping.")
         return
 
     edges = network.es
@@ -1118,7 +1087,7 @@ def itter_path(
     if source_table == "temp_flow_matrix_input_mem":
         conn.execute("DROP TABLE IF EXISTS temp_flow_matrix_input_mem")
 
-    logging.info(
+    logger.info(
         "Completed SQL path explosion and aggregation in DuckDB across "
         f"{chunk_count} chunk(s)."
     )
@@ -1214,7 +1183,7 @@ def itter_path(
         """
         )
 
-    logging.info("Complete creating temp_flow_matrix table in Duckdb!")
+    logger.info("Complete creating temp_flow_matrix table in Duckdb!")
 
     if temp_flow_table is not None:
         conn.execute(f"DROP TABLE IF EXISTS {temp_flow_table}")
@@ -1230,8 +1199,8 @@ def network_flow_model(
     num_of_chunk: int,
     num_of_cpu: int,
     db_path: str = "results.duckdb",
-    iso_out_path: str = None,
-    odpfc_out_path: str = None,
+    iso_out_path: Optional[str] = None,
+    odpfc_out_path: Optional[str] = None,
     vehicle_type: str = "car",
     capacity_mode: bool = False,
 ) -> Tuple[gpd.GeoDataFrame, List[float]]:
@@ -1253,9 +1222,9 @@ def network_flow_model(
         Number of worker processes used for path finding (>=1).
     db_path : str, default "results.duckdb"
         Location of the DuckDB database for temporaries and final tables.
-    iso_out_path : str
+    iso_out_path : Optional[str]
         File path where the final isolated OD Parquet file will be written.
-    odpfc_out_path : str
+    odpfc_out_path : Optional[str]
         File path where the per-path flow/cost Parquet file will be written.
     vehicle_type : str, default "car"
         Vehicle type for cost calculations; one of ["car", "lgv", "ogv", "psv", "rail"].
@@ -1275,13 +1244,13 @@ def network_flow_model(
 
     road_links_columns = road_links.columns.tolist()
     total_remain = remain_od["Car21"].sum()
-    logging.info(f"The initial supply is {total_remain}")
+    logger.info(f"The initial supply is {total_remain}")
     number_of_edges = len(list(network.es))
-    logging.info(f"The initial number of edges in the network: {number_of_edges}")
+    logger.info(f"The initial number of edges in the network: {number_of_edges}")
     number_of_origins = remain_od["origin_node"].unique().shape[0]
-    logging.info(f"The initial number of origins: {number_of_origins}")
+    logger.info(f"The initial number of origins: {number_of_origins}")
     number_of_destinations = remain_od["destination_node"].unique().shape[0]
-    logging.info(f"The initial number of destinations: {number_of_destinations}")
+    logger.info(f"The initial number of destinations: {number_of_destinations}")
 
     # starts
     total_cost = cost_time = cost_fuel = cost_toll = cost_fare = 0
@@ -1344,7 +1313,7 @@ def network_flow_model(
     gc.collect()
 
     while total_remain > 0:
-        logging.info(f"No.{iter_flag} iteration starts:")
+        logger.info(f"No.{iter_flag} iteration starts:")
         # remove OD pairs whose nodes are not present in the current network
         conn.register("current_valid_nodes", pd.DataFrame({"node": network.vs["name"]}))
         conn.execute("DROP TABLE IF EXISTS isolated_tmp")
@@ -1377,7 +1346,7 @@ def network_flow_model(
             )
         conn.unregister("current_valid_nodes")
         conn.execute("DROP TABLE IF EXISTS isolated_tmp")
-        logging.info(f"Initial isolated flows: {temp_isolation}")
+        logger.info(f"Initial isolated flows: {temp_isolation}")
 
         # dump the network and edge weight for shared use in multiprocessing
         shared_network_pkl = pickle.dumps(network)
@@ -1395,7 +1364,7 @@ def network_flow_model(
         ).fetchdf()
         total_args = len(args_df)
 
-        def iter_args():
+        def iter_args(args_df=args_df):
             for row in args_df.itertuples(index=False):
                 yield (
                     row.origin_node,
@@ -1485,7 +1454,7 @@ def network_flow_model(
                 ):
                     handle_shortest_path(shortest_path)
                     if i % 10_000 == 0:
-                        logging.info(
+                        logger.info(
                             f"Completed {i} of {total_args}, "
                             f"{100 * i / total_args:.2f}%"
                         )
@@ -1497,7 +1466,7 @@ def network_flow_model(
             ):
                 handle_shortest_path(shortest_path)
                 if i % 10_000 == 0:
-                    logging.info(
+                    logger.info(
                         f"Completed {i} of {total_args}, "
                         f"{100 * i / total_args:.2f}%"
                     )
@@ -1507,7 +1476,7 @@ def network_flow_model(
 
         flush_flow_batch()
         flush_isolated_batch()
-        logging.info(f"The least-cost path flow allocation time: {time.time() - st}.")
+        logger.info(f"The least-cost path flow allocation time: {time.time() - st}.")
 
         # isolated flows
         temp_isolation = (
@@ -1516,7 +1485,7 @@ def network_flow_model(
             ).fetchone()[0]
             or 0.0
         )
-        logging.info(f"Non_allocated_flow: {temp_isolation}")
+        logger.info(f"Non_allocated_flow: {temp_isolation}")
         if temp_isolation > 0:
             temp_isolation = sync_isolated_od_pairs(conn)
         conn.execute("DROP TABLE IF EXISTS temp_isolated_flow_matrix")
@@ -1527,12 +1496,12 @@ def network_flow_model(
             or 0
         )
         if temp_flow_count == 0:
-            logging.info("Stop: no remaining flows!")
+            logger.info("Stop: no remaining flows!")
             conn.execute("DROP TABLE IF EXISTS temp_flow_matrix_input")
             break
 
         # %%
-        logging.info("Create temp_flow_matrix table in duckdb...")
+        logger.info("Create temp_flow_matrix table in duckdb...")
         # origin (name), destination(name), path(idx), flow(int)
         itter_path(
             network,
@@ -1656,7 +1625,7 @@ def network_flow_model(
         )
 
         # Recalculate edge speeds for edges that changed (vectorized if possible)
-        logging.info("Updating edge speeds: ")
+        logger.info("Updating edge speeds: ")
         update_edge_speed(road_links, inplace=True)
         road_links.drop(columns=["flow"], inplace=True)
 
@@ -1697,7 +1666,7 @@ def network_flow_model(
             ]
             or 0.0
         )
-        logging.info(f"The total remain flow (after adjustment) is: {total_remain}.")
+        logger.info(f"The total remain flow (after adjustment) is: {total_remain}.")
         gc.collect()
 
         # %%
@@ -1728,23 +1697,24 @@ def network_flow_model(
                 )
 
             if stop_reason == "target_allocated":
-                logging.info(
+                logger.info(
                     f"Stop: {percentage_sumod*100}% of flows have been allocated with "
                     f"{temp_isolation} extra isolated flows."
                 )
             else:
-                logging.info(
+                logger.info(
                     f"Stop: Maximum iterations reached ({max_iterations}) with "
                     f"{temp_isolation} extra isolated flows. "
                 )
                 if capacity_mode:
-                    logging.info(
+                    logger.info(
                         "Capacity mode: skipped OD adjustment on the final iteration."
                     )
             break
 
         # %%
         # update network structure (nodes and edges) for next iteration
+        network = update_network_costs(network, road_links, vehicle_type=vehicle_type)
         network, road_links = update_network_structure(
             number_of_edges,
             network,
@@ -1795,10 +1765,10 @@ def network_flow_model(
         )
     conn.close()
 
-    logging.info("The flow simulation is completed!")
-    logging.info(f"total travel cost is (£): {total_cost}")
-    logging.info(f"total time-equiv cost is (£): {cost_time}")
-    logging.info(f"total operating cost is (£): {cost_fuel}")
-    logging.info(f"total toll cost is (£): {cost_toll}")
+    logger.info("The flow simulation is completed!")
+    logger.info(f"total travel cost is (£): {total_cost}")
+    logger.info(f"total time-equiv cost is (£): {cost_time}")
+    logger.info(f"total operating cost is (£): {cost_fuel}")
+    logger.info(f"total toll cost is (£): {cost_toll}")
 
     return road_links, cList
