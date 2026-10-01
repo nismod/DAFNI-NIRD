@@ -32,8 +32,8 @@ def main(
     # outpath
     out_path = macc_path.parent / "outputs"
     out_path.mkdir(parents=True, exist_ok=True)
-    iso_out_path = out_path / f"isolation_NI_{scenario_key}.pq"
-    odpfc_out_path = out_path / f"odpfc_NI_{scenario_key}.pq"
+    iso_out_path = out_path / f"isolation_NI_{scenario_key}_updated.pq"
+    odpfc_out_path = out_path / f"odpfc_NI_{scenario_key}_updated.pq"
 
     # model parameters
     with open(macc_path / "parameters" / "flow_breakpoint_dict.json", "r") as f:
@@ -102,7 +102,7 @@ def main(
     )
 
     # export files
-    road_links.to_parquet(out_path / f"edge_flow_NI_{scenario_key}.gpq")
+    road_links.to_parquet(out_path / f"edge_flow_NI_{scenario_key}_updated.gpq")
     logging.info(f"The total simulation time: {time.time() - start_time}")
 
 
