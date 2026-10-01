@@ -122,3 +122,4 @@ test_outputs
 *.png
 _plottings*
 out/
+*.code-workspace
