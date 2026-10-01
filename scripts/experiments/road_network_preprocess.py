@@ -5,7 +5,7 @@ import pandas as pd
 import geopandas as gpd  # type: ignore
 import nird.constants as cons
 from nird.utils import load_config
-import nird.road_revised as func
+import nird.road_capacity as func
 import warnings
 import json
 

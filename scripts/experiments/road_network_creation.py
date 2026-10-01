@@ -11,7 +11,7 @@ import pandas as pd
 import geopandas as gpd  # type: ignore
 
 from nird.utils import load_config
-import nird.road as func
+import nird.road_capacity as func
 import warnings
 import json
 

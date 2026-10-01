@@ -13,7 +13,7 @@ import pandas as pd
 from tqdm import tqdm
 from collections import defaultdict
 
-import nird.road_revised as func
+import nird.road_capacity as func
 from nird.utils import load_config, get_flow_on_edges
 import duckdb
 

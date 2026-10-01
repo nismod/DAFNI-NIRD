@@ -5,7 +5,7 @@ import warnings
 from tqdm import tqdm
 import logging
 import ibis as ib
-import nird.road_revised as func
+import nird.road_capacity as func
 from nird.utils import load_config
 import json
 

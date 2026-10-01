@@ -10,7 +10,7 @@ import geopandas as gpd
 import pandas as pd
 import random
 from nird.utils import load_config
-import nird.road as func
+import nird.road_capacity as func
 from collections import defaultdict
 from tqdm.auto import tqdm
 import pickle
